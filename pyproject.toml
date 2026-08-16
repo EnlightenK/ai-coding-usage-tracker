@@ -1,0 +1,40 @@
+[project]
+name = "ai-coding-usage-tracker"
+version = "0.1.0"
+description = "Track quotas, usage and subscription state for AI coding plans (MiniMax, GLM, Claude Code, Codex)."
+readme = "README.md"
+authors = [
+    { name = "EnlightenK", email = "27617920+EnlightenK@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "requests>=2.34.2",
+    "rich>=15.0.0",
+    "typer>=0.27.1",
+    "tzdata>=2026.3",
+]
+
+[project.scripts]
+plantrack = "ai_coding_usage_tracker.cli:app"
+ptk = "ai_coding_usage_tracker.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.11.19,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.14.0",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+# B008: typer.Option/typer.Argument calls in parameter defaults are the
+# framework idiom and cannot be avoided.
+# UP017: the codebase consistently uses timezone.utc; migrating to the
+# datetime.UTC alias is churn with no benefit.
+ignore = ["B008", "UP017"]

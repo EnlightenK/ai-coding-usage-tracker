@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from . import config, paths, store
+from . import __version__, config, paths, store
 from .discovery import (
     MINIMAX_DEFAULT_HOSTS,
     PLAN_LABELS,
@@ -42,6 +42,28 @@ history_app = typer.Typer(
 app.add_typer(history_app, name="history")
 console = Console()
 err_console = Console(stderr=True)
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        console.print(__version__)
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        help="Show the plantrack version and exit.",
+        callback=_version_callback,
+        is_eager=True,
+    ),
+) -> None:
+    """Track quotas, usage and subscription state for AI coding plans."""
+    # Runs before every command: one-time move of pre-0.2.0 data into
+    # ~/.local/ptk/ (a no-op once the layout is current).
+    paths.migrate_legacy(paths.default_home())
 
 
 def _fmt_tokens(value: int) -> str:

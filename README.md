@@ -50,16 +50,18 @@ uv run ptk usage -d 7
 ### Install as a global command (no `uv run`)
 
 ```bash
-uv tool install --editable .
+uv tool install .
 ```
 
 After this, `ptk status` (and `plantrack status`) work from any directory and
-any shell — Git Bash, PowerShell, CMD — with no `uv run` prefix. The
-`--editable` flavor keeps the command in sync with this checkout, so code
-changes apply immediately. On the VPS, run the same command inside the clone.
-If the command is not found after installing, run `uv tool update-shell` and
-restart the shell; updates to dependencies later need
-`uv tool upgrade ai-coding-usage-tracker` (or a reinstall).
+any shell — Git Bash, PowerShell, CMD — with no `uv run` prefix, and the
+installed command is fully independent of this checkout. For development,
+`uv tool install --editable .` keeps the command in sync with the working
+copy instead. If the command is not found after installing, run
+`uv tool update-shell` and restart the shell; updates need
+`uv tool install --force .` (or `uv tool upgrade ai-coding-usage-tracker`).
+
+`ptk --version` prints the installed version.
 
 ### Ubuntu / VPS setup
 
@@ -190,20 +192,34 @@ uv run plantrack history usage --plan glm-intl --json
 uv run plantrack history status --hours 24            # status snapshots over time
 ```
 
-The database lives at `~/.local/state/plantrack/plantrack.db` (respecting
-`PLANTRACK_HOME`) and doubles as the status cache.
+All of plantrack's own records live in one data home, `~/.local/ptk/`
+(respecting `PLANTRACK_HOME`):
+
+| File | Purpose |
+|---|---|
+| `~/.local/ptk/plantrack.db` | SQLite: usage history, status snapshots, status cache |
+| `~/.local/ptk/claude-rate-limits.json` | Claude 5h/7d windows from the statusline capture |
+| `~/.local/ptk/claude-profile.json` | Claude account profile cache (12h) |
+| `~/.local/ptk/session-key` | claude.ai `sessionKeyV3` cookie (see `refresh-claude`) |
+| `~/.local/ptk/payloads/` | Raw provider dumps when `PLANTRACK_DEBUG_PAYLOAD=1` |
+
+Configuration (disabled plans, manual keys) stays at
+`~/.config/plantrack/config.json`. Nothing points into a repository checkout
+unless you explicitly configure it. Data from the pre-0.2.0 layout
+(`~/.local/state/plantrack/`, `~/.claude/plantrack-*.json`) is moved into
+`~/.local/ptk/` automatically on the first run.
 
 ### Debugging provider payloads
 
 Set `PLANTRACK_DEBUG_PAYLOAD=1` to keep the raw JSON of every provider
-response under `~/.local/state/plantrack/payloads/` — one file per endpoint,
+response under `~/.local/ptk/payloads/` — one file per endpoint,
 overwritten on each fetch. Useful to see exactly which fields an endpoint
 returns (for example whether a quota API exposes absolute token counts in
 addition to percentages):
 
 ```bash
 PLANTRACK_DEBUG_PAYLOAD=1 uv run plantrack status --refresh
-ls ~/.local/state/plantrack/payloads/
+ls ~/.local/ptk/payloads/
 ```
 
 ### `refresh-claude` — refresh Claude subscription state and limits
@@ -220,12 +236,17 @@ Refreshes two things:
   uses. This part requires a one-time setup:
 
 1. Open claude.ai in your browser → F12 → Application → Cookies → `sessionKeyV3`
-2. Copy the value into `.session-key` in the project root (single line, no quotes)
-3. `chmod 600 .session-key` — it is a live account cookie; treat it like a password
+2. Copy the value into `~/.local/ptk/session-key` (single line, no quotes)
+3. `chmod 600 ~/.local/ptk/session-key` — it is a live account cookie; treat
+   it like a password
 
-The file is gitignored. Alternatively set `PLANTRACK_CLAUDE_SESSION_KEY`.
+The key file never lives in a repository checkout by default. Alternatives:
+the `PLANTRACK_CLAUDE_SESSION_KEY` env var, the `PLANTRACK_SESSION_KEY_FILE`
+env var (any path), or a persistent `"session_key_file": "/path/to/key"`
+entry in `~/.config/plantrack/config.json`.
 Once configured, `plantrack status` also auto-refreshes automatically whenever
-the statusline capture is stale.
+the statusline capture is stale. If you still have an old `.session-key` in a
+project root, move it to `~/.local/ptk/session-key`.
 
 ## How each plan is tracked
 
@@ -246,7 +267,7 @@ show, so the cell simply reads `pro` or `max`.
 
 Claude's plan tier, subscription status and billing channel come from
 `https://api.anthropic.com/api/oauth/profile`, cached for 12 hours in
-`~/.claude/plantrack-claude-profile.json` (the last known state is reused when
+`~/.local/ptk/claude-profile.json` (the last known state is reused when
 the account is unreachable). The OAuth credential's own lifetime is reported
 separately as `auth_days_left` in `--json`, and is appended to the column as
 `(auth 3d)` only when re-authentication is due within a week — it is a token
@@ -262,7 +283,7 @@ never shown as a warning.
 
 A wrapper at `~/.claude/statusline-wrapper.sh` tees the JSON Claude Code feeds
 to the status line into `plantrack capture-claude`, caching the 5h/7d windows
-to `~/.claude/plantrack-claude-rate-limits.json`. Your original
+to `~/.local/ptk/claude-rate-limits.json`. Your original
 `statusline-command.sh` still renders unchanged. The statusLine entry in
 `~/.claude/settings.json` refreshes every 5 minutes, so any open Claude Code
 session keeps the numbers current — no manual action needed.

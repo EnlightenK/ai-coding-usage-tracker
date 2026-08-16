@@ -10,7 +10,7 @@ import pytest
 from conftest import claude_profile_payload, write_profile_cache
 from typer.testing import CliRunner
 
-from ai_coding_usage_tracker import config
+from ai_coding_usage_tracker import __version__, config
 from ai_coding_usage_tracker.cli import _fmt_subscription, app
 from ai_coding_usage_tracker.models import QuotaWindow
 from ai_coding_usage_tracker.providers import codex
@@ -18,6 +18,12 @@ from ai_coding_usage_tracker.providers.minimax import MiniMaxRemains
 from ai_coding_usage_tracker.tracker import collect_statuses
 
 runner = CliRunner()
+
+
+def test_version_flag() -> None:
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert __version__ in result.output
 
 
 @pytest.fixture

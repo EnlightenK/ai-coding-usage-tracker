@@ -1,9 +1,9 @@
 """Optional dumping of raw provider payloads, for API research and debugging.
 
 Set PLANTRACK_DEBUG_PAYLOAD=1 to keep the raw JSON of every provider response
-the tracker fetches under <home>/.local/state/plantrack/payloads/ — one file
-per endpoint, overwritten on each fetch. Payloads are wrapped as
-{"_fetched_at": ..., "payload": ...} so the raw content stays intact.
+the tracker fetches under <home>/.local/ptk/payloads/ — one file per endpoint,
+overwritten on each fetch. Payloads are wrapped as {"_fetched_at": ...,
+"payload": ...} so the raw content stays intact.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def enabled() -> bool:
 def dump_dir(home: Path | None = None) -> Path:
     """Return the directory raw payloads are written to."""
     home = home or paths.default_home()
-    return home / ".local" / "state" / "plantrack" / _DIRNAME
+    return paths.ptk_data_dir(home) / _DIRNAME
 
 
 def dump(name: str, payload: object, home: Path | None = None) -> bool:

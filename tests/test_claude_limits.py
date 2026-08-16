@@ -98,13 +98,33 @@ def test_session_key_from_env(home: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert claude_limits.load_session_key(home) == "sk-ant-sid01-test"
 
 
-def test_session_key_from_project_file(
+def test_session_key_from_data_dir_default(home: Path) -> None:
+    """With no overrides the key is read from ~/.local/ptk/session-key."""
+    key_file = claude_limits.session_key_file(home)
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    key_file.write_text("sk-ant-sid02-default\n", encoding="utf-8")
+    assert claude_limits.load_session_key(home) == "sk-ant-sid02-default"
+
+
+def test_session_key_from_env_file_override(
     home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    key_file = tmp_path / ".session-key"
+    key_file = tmp_path / "anywhere.key"
     key_file.write_text("sk-ant-sid03-file\n", encoding="utf-8")
     monkeypatch.setenv("PLANTRACK_SESSION_KEY_FILE", str(key_file))
     assert claude_limits.load_session_key(home) == "sk-ant-sid03-file"
+
+
+def test_session_key_from_config_entry(home: Path, tmp_path: Path) -> None:
+    """A `session_key_file` entry in the plantrack config opts into any path."""
+    key_file = tmp_path / "repo-shared.key"
+    key_file.write_text("sk-ant-sid04-config\n", encoding="utf-8")
+    config_dir = home / ".config" / "plantrack"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.json").write_text(
+        json.dumps({"session_key_file": str(key_file)}), encoding="utf-8"
+    )
+    assert claude_limits.load_session_key(home) == "sk-ant-sid04-config"
 
 
 def test_session_key_absent(home: Path) -> None:

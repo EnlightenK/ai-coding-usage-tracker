@@ -9,11 +9,11 @@ from pathlib import Path
 
 import requests
 
-from .. import fileutil, paths, payload_dump
+from .. import config, fileutil, paths, payload_dump
 from ..parsing import now_ms, parse_iso, read_json_dict
 
-CACHE_FILENAME = "plantrack-claude-rate-limits.json"
-SESSION_KEY_FILENAME = ".session-key"
+CACHE_FILENAME = "claude-rate-limits.json"
+SESSION_KEY_FILENAME = "session-key"
 SESSION_KEY_ENV = "PLANTRACK_CLAUDE_SESSION_KEY"
 SESSION_KEY_FILE_ENV = "PLANTRACK_SESSION_KEY_FILE"
 MAX_AGE = timedelta(hours=6)
@@ -23,37 +23,41 @@ PROFILE_URL = API_BASE + "/oauth/profile"
 WINDOW_KEYS = ("five_hour", "seven_day")
 
 
-def project_root() -> Path:
-    """Return this project's root directory."""
-    return Path(__file__).resolve().parents[3]
+def session_key_file(home: Path | None = None) -> Path:
+    """Where the claude.ai session-key file is read from.
 
-
-def session_key_file() -> Path:
-    """Return the session key file path inside this project."""
+    PLANTRACK_SESSION_KEY_FILE wins; then a `session_key_file` entry in the
+    plantrack config; otherwise ~/.local/ptk/session-key. Nothing points into
+    a repository checkout unless explicitly configured.
+    """
+    home = home or paths.default_home()
     override = os.environ.get(SESSION_KEY_FILE_ENV)
     if override:
         return Path(override)
-    return project_root() / SESSION_KEY_FILENAME
+    configured = config.load_config(home).get("session_key_file")
+    if isinstance(configured, str) and configured.strip():
+        return Path(configured.strip()).expanduser()
+    return paths.ptk_data_dir(home) / SESSION_KEY_FILENAME
 
 
 def cache_file(home: Path | None = None) -> Path:
     """Return the path of the Claude rate limits cache file."""
     home = home or paths.default_home()
-    return paths.claude_dir(home) / CACHE_FILENAME
+    return paths.ptk_data_dir(home) / CACHE_FILENAME
 
 
 def load_session_key(home: Path | None = None) -> str | None:
-    """Load the claude.ai account session key from env var or project file.
+    """Load the claude.ai account session key from env var or key file.
 
     The key is the `sessionKeyV3` cookie value from a logged-in claude.ai
     browser session. It is stored in PLANTRACK_CLAUDE_SESSION_KEY or in
-    the project's .session-key file.
+    the session-key file (see `session_key_file`).
     """
     from_env = os.environ.get(SESSION_KEY_ENV)
     if from_env and from_env.strip():
         return from_env.strip()
     try:
-        content = session_key_file().read_text(encoding="utf-8")
+        content = session_key_file(home).read_text(encoding="utf-8")
     except OSError:
         return None
     content = content.strip()

@@ -72,7 +72,7 @@ def test_posix_secure_dir_creates_and_locks(
 
 
 def test_write_creates_missing_nested_dirs(tmp_path: Path) -> None:
-    target = tmp_path / ".local" / "state" / "plantrack" / "payloads" / "x.json"
+    target = tmp_path / ".local" / "ptk" / "payloads" / "x.json"
     assert fileutil.secure_write_text(target, "{}")
     assert target.read_text(encoding="utf-8") == "{}"
 
@@ -108,9 +108,7 @@ def test_dump_enabled_returns_true_and_keeps_wrapper(
 ) -> None:
     monkeypatch.setenv(payload_dump.DUMP_ENV, "1")
     assert payload_dump.dump("claude-org-usage", {"remaining": 3}, tmp_path)
-    target = (
-        tmp_path / ".local" / "state" / "plantrack" / "payloads" / "claude-org-usage.json"
-    )
+    target = tmp_path / ".local" / "ptk" / "payloads" / "claude-org-usage.json"
     wrapper = json.loads(target.read_text(encoding="utf-8"))
     assert wrapper["payload"] == {"remaining": 3}
     assert isinstance(wrapper["_fetched_at"], str)
@@ -137,14 +135,14 @@ def test_claude_writers_use_secure_write(
     tmp_path: Path, posix_only: None, chmod_calls: ChmodCalls
 ) -> None:
     assert claude_limits.capture_windows({"five_hour": {"used_percentage": 10}}, tmp_path)
-    limits_target = tmp_path / ".claude" / claude_limits.CACHE_FILENAME
+    limits_target = claude_limits.cache_file(tmp_path)
     assert limits_target.is_file()
     assert (limits_target, 0o600) in chmod_calls
 
     assert claude_profile._write_cache({"account": {"email": "e"}}, tmp_path)
-    profile_target = tmp_path / ".claude" / claude_profile.CACHE_FILENAME
+    profile_target = claude_profile.cache_file(tmp_path)
     assert json.loads(profile_target.read_text(encoding="utf-8"))["profile"] == {
         "account": {"email": "e"}
     }
     assert (profile_target, 0o600) in chmod_calls
-    assert (tmp_path / ".claude", 0o700) in chmod_calls
+    assert (claude_limits.cache_file(tmp_path).parent, 0o700) in chmod_calls

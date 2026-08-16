@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS status_cache (
 def db_path(home: Path | None = None) -> Path:
     """Return the SQLite database path inside the scanned home."""
     home = home or paths.default_home()
-    return home / ".local" / "state" / "plantrack" / DB_FILENAME
+    return paths.ptk_data_dir(home) / DB_FILENAME
 
 
 def _connect(home: Path | None) -> sqlite3.Connection:

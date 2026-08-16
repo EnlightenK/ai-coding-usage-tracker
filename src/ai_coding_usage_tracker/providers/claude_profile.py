@@ -19,7 +19,7 @@ from .. import fileutil, paths
 from ..parsing import now_ms, parse_iso, read_json_dict
 from .claude_limits import PROFILE_URL, load_session_key
 
-CACHE_FILENAME = "plantrack-claude-profile.json"
+CACHE_FILENAME = "claude-profile.json"
 MAX_AGE = timedelta(hours=12)
 
 # Statuses worth showing to a user: they mean the plan may stop working.
@@ -64,7 +64,7 @@ def status_is_concerning(status: str | None, billing: str | None) -> bool:
 def cache_file(home: Path | None = None) -> Path:
     """Return the path of the Claude account profile cache file."""
     home = home or paths.default_home()
-    return paths.claude_dir(home) / CACHE_FILENAME
+    return paths.ptk_data_dir(home) / CACHE_FILENAME
 
 
 def load_cached(

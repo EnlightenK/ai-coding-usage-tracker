@@ -96,7 +96,7 @@ def write_profile_cache(
     """Seed the Claude account profile cache inside a fixture home."""
     stamp = fetched_at or datetime.now(tz=timezone.utc)
     write_json(
-        home / ".claude" / claude_profile.CACHE_FILENAME,
+        claude_profile.cache_file(home),
         {"fetched_at": stamp.isoformat(), "profile": profile},
     )
 

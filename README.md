@@ -47,6 +47,20 @@ uv run ptk status
 uv run ptk usage -d 7
 ```
 
+### Install as a global command (no `uv run`)
+
+```bash
+uv tool install --editable .
+```
+
+After this, `ptk status` (and `plantrack status`) work from any directory and
+any shell — Git Bash, PowerShell, CMD — with no `uv run` prefix. The
+`--editable` flavor keeps the command in sync with this checkout, so code
+changes apply immediately. On the VPS, run the same command inside the clone.
+If the command is not found after installing, run `uv tool update-shell` and
+restart the shell; updates to dependencies later need
+`uv tool upgrade ai-coding-usage-tracker` (or a reinstall).
+
 ### Ubuntu / VPS setup
 
 Install Python 3.13+, `uv`, and the Codex CLI for the dedicated Unix user that

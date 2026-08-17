@@ -6,6 +6,8 @@ import os
 import shutil
 from pathlib import Path
 
+from . import fileutil
+
 HOME_ENV = "PLANTRACK_HOME"
 
 # Layout used before the ~/.local/ptk data home existed (kept for migration).
@@ -64,10 +66,13 @@ def migrate_legacy(home: Path | None = None) -> None:
 
 
 def _move_if_absent(source: Path, target: Path) -> None:
+    # Check-then-act, not atomic: two concurrent first runs could race, and
+    # the worst case is losing a few minutes of freshly recorded data — once.
+    # Accepted for a documented best-effort, one-time migration.
     if not source.is_file() or target.exists():
         return
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        fileutil.secure_dir(target.parent)
         shutil.move(str(source), str(target))
     except OSError:
         pass
@@ -77,7 +82,7 @@ def _move_tree_if_absent(source: Path, target: Path) -> None:
     if not source.is_dir() or target.exists():
         return
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        fileutil.secure_dir(target.parent)
         shutil.move(str(source), str(target))
     except OSError:
         pass

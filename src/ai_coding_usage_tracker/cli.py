@@ -637,8 +637,9 @@ def refresh_claude(
 
     The subscription profile only needs the local Claude Code OAuth token.
     Rate limits additionally require the sessionKeyV3 cookie from a logged-in
-    claude.ai browser session, stored in this project's .session-key file or
-    PLANTRACK_CLAUDE_SESSION_KEY.
+    claude.ai browser session, stored in ~/.local/ptk/session-key,
+    PLANTRACK_CLAUDE_SESSION_KEY, PLANTRACK_SESSION_KEY_FILE, or a
+    session_key_file entry in the plantrack config.
     """
     target_home = home or paths.default_home()
     # Independent of the session key, so it runs before any early exit below.
@@ -663,7 +664,9 @@ def refresh_claude(
         err_console.print("[yellow]No claude.ai session key configured.[/yellow]")
         err_console.print(
             "1. Open claude.ai in your browser, F12 -> Application -> Cookies -> sessionKeyV3\n"
-            "2. Copy the value into the project's .session-key file (single line)"
+            "2. Copy the value into ~/.local/ptk/session-key (single line)\n"
+            "   (alternatives: PLANTRACK_CLAUDE_SESSION_KEY, PLANTRACK_SESSION_KEY_FILE,\n"
+            "    or a session_key_file entry in ~/.config/plantrack/config.json)"
         )
         raise typer.Exit(code=2)
     else:

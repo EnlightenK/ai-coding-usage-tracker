@@ -33,7 +33,9 @@ def session_key_file(home: Path | None = None) -> Path:
     home = home or paths.default_home()
     override = os.environ.get(SESSION_KEY_FILE_ENV)
     if override:
-        return Path(override)
+        # expanduser: env overrides are common in systemd/cron/.env contexts
+        # where the shell does not expand ~ itself.
+        return Path(override).expanduser()
     configured = config.load_config(home).get("session_key_file")
     if isinstance(configured, str) and configured.strip():
         return Path(configured.strip()).expanduser()
@@ -102,7 +104,8 @@ def refresh_from_api(
     Follows the same channel the claude.ai web/desktop apps use: the
     sessionKey cookie value as a Bearer token against the organizations
     endpoints. Requires the claude.ai session key from PLANTRACK_CLAUDE_SESSION_KEY,
-    the project's .session-key file, or a path via PLANTRACK_SESSION_KEY_FILE.
+    ~/.local/ptk/session-key, PLANTRACK_SESSION_KEY_FILE, or a session_key_file
+    entry in the plantrack config.
 
     Returns (success, note).
     """

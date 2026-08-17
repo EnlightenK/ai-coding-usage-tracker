@@ -36,6 +36,18 @@ def fake_jwt(claims: dict) -> str:
 
 
 @pytest.fixture(autouse=True)
+def isolated_plantrack_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pin PLANTRACK_HOME to the test's tmp dir for every test.
+
+    The CLI callback runs the legacy-path migration against default_home(),
+    so without this pin any command-invoking test would migrate (and thus
+    touch) the developer's real home directory.
+    """
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    return tmp_path
+
+
+@pytest.fixture(autouse=True)
 def no_real_codex_app_server(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep fixture homes hermetic; focused app-server tests opt in explicitly."""
     def unavailable(*_: object, **__: object) -> object:
@@ -126,7 +138,8 @@ def claude_profile_payload(**organization: object) -> dict:
 
 @pytest.fixture
 def home(tmp_path: Path) -> Path:
-    now_ms = 1786900000000
+    # Relative to the real clock so the OAuth token stays unexpired.
+    now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
 
     write_json(
         tmp_path / ".local" / "share" / "opencode" / "auth.json",

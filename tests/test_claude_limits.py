@@ -94,6 +94,10 @@ def test_tracker_notes_stale_capture(home: Path) -> None:
 
 
 def test_session_key_from_env(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A decoy file at the default location ensures precedence is really pinned.
+    default = claude_limits.session_key_file(home)
+    default.parent.mkdir(parents=True, exist_ok=True)
+    default.write_text("sk-ant-decoy-default\n", encoding="utf-8")
     monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
     assert claude_limits.load_session_key(home) == "sk-ant-sid01-test"
 
@@ -115,6 +119,18 @@ def test_session_key_from_env_file_override(
     assert claude_limits.load_session_key(home) == "sk-ant-sid03-file"
 
 
+def test_session_key_env_file_is_tilde_expanded(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Env overrides often come from systemd/cron/.env where ~ is not expanded."""
+    key_file = tmp_path / "repo.key"
+    key_file.write_text("sk-ant-sid05-tilde\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("PLANTRACK_SESSION_KEY_FILE", "~/repo.key")
+    assert claude_limits.load_session_key(home) == "sk-ant-sid05-tilde"
+
+
 def test_session_key_from_config_entry(home: Path, tmp_path: Path) -> None:
     """A `session_key_file` entry in the plantrack config opts into any path."""
     key_file = tmp_path / "repo-shared.key"
@@ -125,6 +141,22 @@ def test_session_key_from_config_entry(home: Path, tmp_path: Path) -> None:
         json.dumps({"session_key_file": str(key_file)}), encoding="utf-8"
     )
     assert claude_limits.load_session_key(home) == "sk-ant-sid04-config"
+
+
+def test_session_key_env_file_beats_config_entry(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_key = tmp_path / "config-key"
+    config_key.write_text("sk-ant-config\n", encoding="utf-8")
+    env_key = tmp_path / "env-key"
+    env_key.write_text("sk-ant-env\n", encoding="utf-8")
+    config_dir = home / ".config" / "plantrack"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.json").write_text(
+        json.dumps({"session_key_file": str(config_key)}), encoding="utf-8"
+    )
+    monkeypatch.setenv(claude_limits.SESSION_KEY_FILE_ENV, str(env_key))
+    assert claude_limits.load_session_key(home) == "sk-ant-env"
 
 
 def test_session_key_absent(home: Path) -> None:

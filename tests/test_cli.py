@@ -26,6 +26,19 @@ def test_version_flag() -> None:
     assert __version__ in result.output
 
 
+def test_refresh_claude_error_names_current_key_location(
+    fake_env: pytest.MonkeyPatch,
+) -> None:
+    """The no-key instructions must point at ~/.local/ptk/session-key, not the
+    removed repo-root location (review finding: upgrading users followed the
+    stale text into a failure loop)."""
+    result = runner.invoke(app, ["refresh-claude"])
+    assert result.exit_code == 2
+    assert "~/.local/ptk/session-key" in result.stderr
+    assert "project's" not in result.stderr
+    assert "PLANTRACK_SESSION_KEY_FILE" in result.stderr
+
+
 @pytest.fixture
 def fake_env(
     home: Path, monkeypatch: pytest.MonkeyPatch

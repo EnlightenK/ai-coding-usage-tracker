@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+from typer.testing import CliRunner
 
 from ai_coding_usage_tracker import paths
 
@@ -54,3 +57,28 @@ def test_migration_never_overwrites_existing_target(tmp_path: Path) -> None:
 def test_migration_on_clean_home_is_noop(tmp_path: Path) -> None:
     paths.migrate_legacy(tmp_path)
     assert not paths.ptk_data_dir(tmp_path).exists()
+
+
+def test_cli_callback_runs_migration(tmp_path: Path) -> None:
+    """The app callback must migrate the default home before commands run.
+
+    Regression guard: deleting the migrate_legacy call from cli.py would
+    otherwise leave every test green.
+    """
+    from ai_coding_usage_tracker.cli import app
+
+    _legacy_layout(tmp_path)  # tmp_path is the pinned PLANTRACK_HOME
+    result = CliRunner().invoke(app, ["plan", "list"])
+    assert result.exit_code == 0
+    assert (tmp_path / ".local" / "ptk" / "plantrack.db").read_text(encoding="utf-8") == "db"
+    assert not (tmp_path / ".local" / "state" / "plantrack" / "plantrack.db").exists()
+
+
+def test_version_flag_skips_migration(tmp_path: Path) -> None:
+    """--version exits eagerly: no home access, nothing migrated or created."""
+    from ai_coding_usage_tracker.cli import app
+
+    result = CliRunner().invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert not (tmp_path / ".local" / "ptk").exists()
+    assert os.environ.get("PLANTRACK_HOME") == str(tmp_path)

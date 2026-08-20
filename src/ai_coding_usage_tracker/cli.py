@@ -629,6 +629,45 @@ def codex_login(    timeout: int = typer.Option(
     console.print("[green]Codex is authenticated with your ChatGPT plan.[/green]")
 
 
+def _report_limits_without_session_key(home: Path) -> None:
+    """Report the rate-limit state when no claude.ai session key is configured.
+
+    The statusline capture already supplies the 5h/7d windows with no cookie at
+    all, so a missing session key is only a failure when that capture has
+    produced nothing usable. The local Claude Code OAuth token is not an
+    alternative credential here: the organization rate_limits/usage endpoints
+    reject it with `account_session_invalid` regardless of its scopes.
+    """
+    quotas = {q.kind: q for q in claude.cached_quotas(home)}
+    age = claude_limits.captured_age(home)
+    if quotas:
+        source = escape(claude_limits.captured_source(home))
+        captured = f" [dim](captured {escape(age)} ago)[/dim]" if age else ""
+        console.print(f"[green]Rate limits are current from the {source}.[/green]{captured}")
+        for kind, label in (("5h", "5h window"), ("weekly", "Weekly window")):
+            if kind in quotas:
+                console.print(f"  {label}: {_fmt_used(quotas[kind].remaining_percent)}")
+        console.print(
+            "[dim]A claude.ai session key is optional. It only adds a refresh that\n"
+            "works while Claude Code is closed; see `refresh-claude --help`.[/dim]"
+        )
+        return
+    stale = f" (last statusline capture {age} ago, past the 6h freshness limit)" if age else ""
+    err_console.print(f"[yellow]No usable Claude rate limit windows{stale}.[/yellow]")
+    err_console.print(
+        "Rate limits normally arrive with no credential at all, from the Claude Code\n"
+        "statusline capture — run a Claude Code session with the statusline wrapper\n"
+        "installed (see the README) and they refresh on their own.\n"
+        "\n"
+        "To refresh them without Claude Code open, add a claude.ai session key:\n"
+        "1. Open claude.ai in your browser, F12 -> Application -> Cookies -> sessionKeyV3\n"
+        "2. Copy the value into ~/.local/ptk/session-key (single line)\n"
+        "   (alternatives: PLANTRACK_CLAUDE_SESSION_KEY, PLANTRACK_SESSION_KEY_FILE,\n"
+        "    or a session_key_file entry in ~/.config/plantrack/config.json)"
+    )
+    raise typer.Exit(code=2)
+
+
 @app.command()
 def refresh_claude(
     home: Path | None = typer.Option(None, help="Home directory for config/cache."),
@@ -636,10 +675,13 @@ def refresh_claude(
     """Refresh Claude subscription state and rate limits from Anthropic.
 
     The subscription profile only needs the local Claude Code OAuth token.
-    Rate limits additionally require the sessionKeyV3 cookie from a logged-in
-    claude.ai browser session, stored in ~/.local/ptk/session-key,
-    PLANTRACK_CLAUDE_SESSION_KEY, PLANTRACK_SESSION_KEY_FILE, or a
-    session_key_file entry in the plantrack config.
+    Rate limits normally need no credential either — the statusline capture
+    keeps them current while Claude Code runs. Refreshing them here instead
+    requires the sessionKeyV3 cookie from a logged-in claude.ai session (in
+    ~/.local/ptk/session-key, PLANTRACK_CLAUDE_SESSION_KEY,
+    PLANTRACK_SESSION_KEY_FILE, or a session_key_file config entry), because
+    the organization usage endpoints accept only an account session; the
+    OAuth token is rejected there as `account_session_invalid`.
     """
     target_home = home or paths.default_home()
     # Independent of the session key, so it runs before any early exit below.
@@ -661,14 +703,7 @@ def refresh_claude(
                 quota = quotas[kind]
                 console.print(f"  {label}: {_fmt_used(quota.remaining_percent)}")
     elif note and "no claude.ai session key" in note:
-        err_console.print("[yellow]No claude.ai session key configured.[/yellow]")
-        err_console.print(
-            "1. Open claude.ai in your browser, F12 -> Application -> Cookies -> sessionKeyV3\n"
-            "2. Copy the value into ~/.local/ptk/session-key (single line)\n"
-            "   (alternatives: PLANTRACK_CLAUDE_SESSION_KEY, PLANTRACK_SESSION_KEY_FILE,\n"
-            "    or a session_key_file entry in ~/.config/plantrack/config.json)"
-        )
-        raise typer.Exit(code=2)
+        _report_limits_without_session_key(target_home)
     else:
         err_console.print(f"[red]Refresh failed: {note}[/red]")
         raise typer.Exit(code=1)

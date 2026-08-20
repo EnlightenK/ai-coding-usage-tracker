@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from conftest import claude_profile_payload, write_profile_cache
+from conftest import claude_profile_payload, write_json, write_profile_cache
 from typer.testing import CliRunner
 
 from ai_coding_usage_tracker import __version__, config
@@ -37,6 +37,28 @@ def test_refresh_claude_error_names_current_key_location(
     assert "~/.local/ptk/session-key" in result.stderr
     assert "project's" not in result.stderr
     assert "PLANTRACK_SESSION_KEY_FILE" in result.stderr
+
+
+def test_refresh_claude_reports_statusline_windows_without_a_key(
+    home: Path, fake_env: pytest.MonkeyPatch
+) -> None:
+    """A missing session key is not a failure while the statusline capture is
+    fresh: those windows need no credential, so report them and exit 0 instead
+    of sending the user to the browser for a cookie they do not need."""
+    write_json(
+        home / ".local" / "ptk" / "claude-rate-limits.json",
+        {
+            "captured_at": datetime.now(tz=timezone.utc).isoformat(),
+            "five_hour": {"used_percentage": 21.0},
+            "seven_day": {"used_percentage": 34.0},
+        },
+    )
+    result = runner.invoke(app, ["refresh-claude"])
+    assert result.exit_code == 0
+    assert "statusline capture" in result.output
+    assert "21% used" in result.output
+    assert "34% used" in result.output
+    assert "optional" in result.output
 
 
 @pytest.fixture

@@ -233,7 +233,24 @@ Refreshes two things:
 - **Subscription state** from the account profile endpoint. This needs no extra
   setup — the local Claude Code OAuth token is already scoped for it.
 - **5h/7d rate limits** from the same Anthropic endpoints the claude.ai web app
-  uses. This part requires a one-time setup:
+  uses. This part is *optional*: the statusline capture below already keeps
+  those windows current with no credential at all, and this command reports
+  them instead of failing when no session key is configured. Configure a key
+  only if you want the numbers refreshed while Claude Code is closed.
+
+The rate-limit endpoints cannot be reached with the local Claude Code OAuth
+token — `GET /api/organizations/{uuid}/rate_limits` and `/usage` reject it with
+`403 account_session_invalid` whatever its scopes, because they accept only a
+claude.ai *account session*. That cookie is what the claude.ai web and desktop
+apps send, and it is the only credential that unlocks this path.
+
+The windows live in `/usage`, as `five_hour` and `seven_day` objects keyed on
+`utilization` (percent used) plus an ISO `resets_at`. `/rate_limits` answers
+200 with per-model concurrency tiers and no usage windows at all, so it is
+tried only as a fallback shape. Set `PLANTRACK_DEBUG_PAYLOAD=1` to dump either
+response to `~/.local/ptk/payloads/` when the shape changes again.
+
+To configure the key:
 
 1. Open claude.ai in your browser → F12 → Application → Cookies → `sessionKeyV3`
 2. Copy the value into `~/.local/ptk/session-key` (single line, no quotes)

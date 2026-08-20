@@ -39,18 +39,23 @@ def test_usage_upsert_replaces_instead_of_adding(tmp_path: Path) -> None:
 
 
 def test_usage_history_filters_days_and_plan(tmp_path: Path) -> None:
+    # Dates are relative to today: a `days=3` window over hardcoded dates stops
+    # matching as soon as the wall clock moves past them.
+    today = datetime.now(tz=timezone.utc).date()
+    inside = (today - timedelta(days=1)).isoformat()
+    outside = (today - timedelta(days=20)).isoformat()
     store.record_usage(
         tmp_path,
         [
-            _usage("2026-08-01", "glm-intl", input_tokens=1),
-            _usage("2026-08-15", "glm-intl", input_tokens=2),
-            _usage("2026-08-15", "minimax-cn", input_tokens=3),
+            _usage(outside, "glm-intl", input_tokens=1),
+            _usage(inside, "glm-intl", input_tokens=2),
+            _usage(inside, "minimax-cn", input_tokens=3),
         ],
     )
     by_plan = store.usage_history(tmp_path, days=3, plan_id="glm-intl")
     assert [r.input_tokens for r in by_plan] == [2]
     recent = store.usage_history(tmp_path, days=3)
-    assert {r.input_tokens for r in recent} == {2, 3}  # the 08-01 row is outside
+    assert {r.input_tokens for r in recent} == {2, 3}  # the older row is outside
     older = store.usage_history(tmp_path, days=30)
     assert {r.input_tokens for r in older} == {1, 2, 3}
 

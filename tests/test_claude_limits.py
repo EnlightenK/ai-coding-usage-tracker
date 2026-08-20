@@ -187,6 +187,8 @@ def test_refresh_success_via_api(home: Path, monkeypatch: pytest.MonkeyPatch) ->
                 200,
                 {"organization": {"uuid": "org-123"}},
             )
+        if url.endswith("/usage"):
+            return FakeResponse(404, {})
         if url.endswith("/rate_limits"):
             return FakeResponse(
                 200,
@@ -206,9 +208,10 @@ def test_refresh_success_via_api(home: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert quotas["weekly"].remaining_percent == 80.0
 
 
-def test_refresh_falls_back_to_usage_segment(
+def test_refresh_finds_windows_nested_in_the_usage_payload(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Windows are located by key, wherever the payload nests them."""
     monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
 
     class FakeResponse:
@@ -269,3 +272,118 @@ def test_normalize_window_tolerates_variants() -> None:
     assert entry["resets_at"] == int(
         datetime.fromisoformat("2026-08-16T20:00:00+00:00").timestamp()
     )
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def _fake_usage_api(payload: dict):
+    """Fake the account-session API, serving `payload` from /usage."""
+
+    def fake_get(url: str, headers: dict, timeout: float) -> _FakeResponse:
+        if url.endswith("/oauth/profile"):
+            return _FakeResponse(200, {"organization": {"uuid": "org-123"}})
+        if url.endswith("/usage"):
+            return _FakeResponse(200, payload)
+        if url.endswith("/rate_limits"):
+            # The live endpoint answers 200 with concurrency tiers and no windows.
+            return _FakeResponse(200, {"rate_limit_tier": "default_claude_ai"})
+        raise AssertionError(f"unexpected url: {url}")
+
+    return fake_get
+
+
+def test_refresh_parses_the_account_usage_shape(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live /organizations/{uuid}/usage shape: `utilization` plus an ISO
+    `resets_at`. Reported as 0 used before this was recognised."""
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    monkeypatch.setattr(
+        claude_limits.requests,
+        "get",
+        _fake_usage_api(
+            {
+                "five_hour": {
+                    "utilization": 32.0,
+                    "resets_at": "2026-08-20T18:29:59.742869+00:00",
+                    "limit_dollars": None,
+                },
+                "seven_day": {
+                    "utilization": 36.0,
+                    "resets_at": "2026-08-23T11:59:59.742893+00:00",
+                    "limit_dollars": None,
+                },
+                "seven_day_opus": None,
+            }
+        ),
+    )
+    success, note = claude_limits.refresh_from_api(home)
+    assert success
+    assert note is None
+    quotas = {q.kind: q for q in claude.cached_quotas(home)}
+    assert quotas["5h"].remaining_percent == 68.0
+    assert quotas["weekly"].remaining_percent == 64.0
+    assert quotas["5h"].resets_at is not None
+
+
+def test_refresh_never_clobbers_a_capture_with_percentless_windows(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A window carrying only a reset time says nothing about usage. Accepting
+    it used to report a successful refresh that overwrote good statusline data
+    with windows rendering as '-'."""
+    claude_limits.capture_from_statusline_json(STATUSLINE_PAYLOAD, home)
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    monkeypatch.setattr(
+        claude_limits.requests,
+        "get",
+        _fake_usage_api(
+            {
+                "five_hour": {"resets_at": "2026-08-20T18:29:59+00:00"},
+                "seven_day": {"resets_at": "2026-08-23T11:59:59+00:00"},
+            }
+        ),
+    )
+    success, note = claude_limits.refresh_from_api(home)
+    assert not success
+    assert "usage shape unknown" in (note or "")
+    quotas = {q.kind: q for q in claude.cached_quotas(home)}
+    assert quotas["5h"].remaining_percent == 76.5
+    assert quotas["weekly"].remaining_percent == 58.8
+
+
+def test_tracker_attributes_an_api_refresh_to_the_session(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scheduled refresh runs with Claude Code closed, so the note must not
+    credit the statusline capture for numbers the account session fetched."""
+    from ai_coding_usage_tracker.tracker import collect_statuses
+
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    monkeypatch.setattr(
+        claude_limits.requests,
+        "get",
+        _fake_usage_api({"five_hour": {"utilization": 32.0}}),
+    )
+    assert claude_limits.refresh_from_api(home)[0]
+    assert claude_limits.captured_source(home) == claude_limits.SOURCE_ACCOUNT_SESSION
+    note = {s.plan_id: s for s in collect_statuses(home)}["claude-code"].note or ""
+    assert "claude.ai session" in note
+    assert "statusline capture" not in note
+
+
+def test_captured_source_defaults_for_pre_field_snapshots(home: Path) -> None:
+    """Snapshots written before the field existed came from the statusline."""
+    claude_limits.capture_from_statusline_json(STATUSLINE_PAYLOAD, home)
+    target = claude_limits.cache_file(home)
+    snapshot = json.loads(target.read_text(encoding="utf-8"))
+    del snapshot["source"]
+    target.write_text(json.dumps(snapshot), encoding="utf-8")
+    assert claude_limits.captured_source(home) == claude_limits.SOURCE_STATUSLINE

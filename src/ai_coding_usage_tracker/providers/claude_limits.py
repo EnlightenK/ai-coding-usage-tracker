@@ -17,6 +17,11 @@ SESSION_KEY_FILENAME = "session-key"
 SESSION_KEY_ENV = "PLANTRACK_CLAUDE_SESSION_KEY"
 SESSION_KEY_FILE_ENV = "PLANTRACK_SESSION_KEY_FILE"
 MAX_AGE = timedelta(hours=6)
+# Which channel produced a snapshot. Both write the same shape, so the label is
+# recorded rather than inferred - a scheduled API refresh must not be reported
+# as a statusline capture.
+SOURCE_STATUSLINE = "statusline capture"
+SOURCE_ACCOUNT_SESSION = "claude.ai session"
 API_BASE = "https://api.anthropic.com/api"
 PROFILE_URL = API_BASE + "/oauth/profile"
 
@@ -79,9 +84,14 @@ def capture_from_statusline_json(payload: dict, home: Path | None = None) -> boo
     )
 
 
-def capture_windows(windows: dict, home: Path | None = None) -> bool:
+def capture_windows(
+    windows: dict, home: Path | None = None, source: str = SOURCE_STATUSLINE
+) -> bool:
     """Persist a snapshot built from {window_name: {...}} dicts."""
-    snapshot: dict = {"captured_at": datetime.now(tz=timezone.utc).isoformat()}
+    snapshot: dict = {
+        "captured_at": datetime.now(tz=timezone.utc).isoformat(),
+        "source": source,
+    }
     captured_any = False
     for window in WINDOW_KEYS:
         window_data = windows.get(window)
@@ -118,7 +128,9 @@ def refresh_from_api(
     if not org_uuid:
         return False, note or "could not resolve organization uuid"
 
-    for segment in ("rate_limits", "usage"):
+    # `usage` carries the five_hour/seven_day windows; `rate_limits` answers 200
+    # with concurrency tiers only, so it is tried second as a shape fallback.
+    for segment in ("usage", "rate_limits"):
         url = f"{API_BASE}/organizations/{org_uuid}/{segment}"
         try:
             response = requests.get(
@@ -137,7 +149,7 @@ def refresh_from_api(
         payload_dump.dump(f"claude-org-{segment}", payload)
         windows = _find_windows(payload)
         if windows:
-            capture_windows(windows, home)
+            capture_windows(windows, home, source=SOURCE_ACCOUNT_SESSION)
             return True, None
     return False, "account session rejected or usage shape unknown"
 
@@ -213,9 +225,16 @@ def _find_key(payload: object, key: str) -> object | None:
 
 def _normalize_window(window_data: dict) -> dict | None:
     """Normalize a window dict to {used_percentage, resets_at}, tolerating
-    alternate field spellings."""
+    alternate field spellings.
+
+    A window without a usable percentage is rejected outright, even when it
+    carries a reset time: such an entry renders as '-' and would still count
+    as a capture, letting an API refresh overwrite good statusline data with
+    windows that say nothing. `utilization` is the spelling the account
+    /organizations/{uuid}/usage endpoint uses.
+    """
     entry: dict = {}
-    for field in ("used_percentage", "used_percent", "usage_percentage"):
+    for field in ("used_percentage", "used_percent", "usage_percentage", "utilization"):
         used = window_data.get(field)
         if isinstance(used, (int, float)) and 0 <= used <= 100:
             entry["used_percentage"] = float(used)
@@ -231,7 +250,7 @@ def _normalize_window(window_data: dict) -> dict | None:
             if parsed:
                 entry["resets_at"] = int(parsed.timestamp())
                 break
-    return entry or None
+    return entry if "used_percentage" in entry else None
 
 
 def _write_snapshot(snapshot: dict, home: Path | None) -> bool:
@@ -255,6 +274,17 @@ def load_cached(home: Path | None = None) -> dict | None:
     if datetime.now(tz=timezone.utc) - captured_at > MAX_AGE:
         return None
     return snapshot
+
+
+def captured_source(home: Path | None = None) -> str:
+    """Name the channel that wrote the cached snapshot.
+
+    Snapshots written before the field existed came from the statusline, which
+    was the only writer at the time.
+    """
+    snapshot = load_cached(home)
+    source = snapshot.get("source") if isinstance(snapshot, dict) else None
+    return source if isinstance(source, str) and source else SOURCE_STATUSLINE
 
 
 def captured_age(home: Path | None = None) -> str | None:

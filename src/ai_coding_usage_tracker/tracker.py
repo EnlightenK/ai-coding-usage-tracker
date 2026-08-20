@@ -136,7 +136,7 @@ def _status_for_plan(plan: DiscoveredPlan, home: Path) -> PlanStatus:
         quotas = claude.cached_quotas(home)
         age = claude_limits.captured_age(home)
         if quotas:
-            note = f"rate limits as of {age} ago (statusline capture)"
+            note = f"rate limits as of {age} ago ({claude_limits.captured_source(home)})"
         elif claude_limits.load_session_key(home):
             success, refresh_note = claude_limits.refresh_from_api(home)
             if success:

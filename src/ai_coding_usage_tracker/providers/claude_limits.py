@@ -10,7 +10,7 @@ from pathlib import Path
 import requests
 
 from .. import config, fileutil, paths, payload_dump
-from ..parsing import now_ms, parse_iso, read_json_dict
+from ..parsing import age_text, now_ms, parse_iso, read_json_dict
 
 CACHE_FILENAME = "claude-rate-limits.json"
 SESSION_KEY_FILENAME = "session-key"
@@ -157,12 +157,17 @@ def refresh_from_api(
 def _fetch_org_uuid(
     session_key: str, home: Path, timeout: float
 ) -> tuple[str | None, str | None]:
-    """Resolve the organization uuid via the oauth profile endpoint.
+    """Resolve the organization uuid, live if possible and from cache if not.
 
-    Prefers the Claude Code OAuth token (already scoped for profile);
-    falls back to the account session key.
+    The profile endpoint only accepts an OAuth token, and the Claude Code one
+    expires within hours of Claude Code last running - precisely the state
+    this refresh is meant to work in. So a stored profile is consulted when
+    the live lookups fail: the uuid identifies the account and never changes,
+    which makes a cached copy as good as a fetched one.
     """
-    for token, _source in _profile_tokens(session_key, home):
+    tried: list[str] = []
+    for token, source in _profile_tokens(session_key, home):
+        tried.append(source)
         try:
             response = requests.get(
                 PROFILE_URL,
@@ -177,11 +182,32 @@ def _fetch_org_uuid(
             payload = response.json()
         except ValueError:
             continue
-        org = payload.get("organization")
-        uuid = org.get("uuid") if isinstance(org, dict) else None
-        if isinstance(uuid, str) and uuid:
+        uuid = _org_uuid(payload)
+        if uuid:
             return uuid, None
-    return None, f"profile lookup failed via {_source}"
+    uuid = _org_uuid(_cached_profile(home))
+    if uuid:
+        return uuid, None
+    attempts = ", ".join(tried) or "no usable credential"
+    return None, f"profile lookup failed via {attempts}, and no cached profile"
+
+
+def _org_uuid(payload: object) -> str | None:
+    """Pull the organization uuid out of a profile payload."""
+    org = payload.get("organization") if isinstance(payload, dict) else None
+    uuid = org.get("uuid") if isinstance(org, dict) else None
+    return uuid if isinstance(uuid, str) and uuid else None
+
+
+def _cached_profile(home: Path) -> dict | None:
+    """Load the stored account profile at any age.
+
+    Imported lazily: claude_profile reads this module for the profile URL and
+    session key, so a module-level import would be circular.
+    """
+    from . import claude_profile
+
+    return claude_profile.load_cached(home, max_age=None)
 
 
 def _profile_tokens(session_key: str, home: Path) -> list[tuple[str, str]]:
@@ -287,11 +313,12 @@ def captured_source(home: Path | None = None) -> str:
     return source if isinstance(source, str) and source else SOURCE_STATUSLINE
 
 
-def captured_age(home: Path | None = None) -> str | None:
-    """Return a human-readable age of the last capture, e.g. '3m' or '2h5m'.
+def captured_at(home: Path | None = None) -> datetime | None:
+    """Return when the cached snapshot was written, even if it is stale.
 
-    Works even when the cache is stale, so callers can explain why quota
-    windows are missing.
+    Callers render the age from this themselves, so a status row served from
+    the store still reports how old the underlying capture is *now* rather
+    than how old it was when the row was written.
     """
     target = cache_file(home)
     try:
@@ -300,15 +327,16 @@ def captured_age(home: Path | None = None) -> str | None:
         return None
     if not isinstance(snapshot, dict):
         return None
-    captured_at = parse_iso(snapshot.get("captured_at"))
-    if captured_at is None:
+    return parse_iso(snapshot.get("captured_at"))
+
+
+def captured_age(home: Path | None = None) -> str | None:
+    """Return a human-readable age of the last capture, e.g. '3m' or '2h5m'.
+
+    Works even when the cache is stale, so callers can explain why quota
+    windows are missing.
+    """
+    captured = captured_at(home)
+    if captured is None:
         return None
-    seconds = int((datetime.now(tz=timezone.utc) - captured_at).total_seconds())
-    if seconds < 0:
-        seconds = 0
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes, hours = seconds % 3600 // 60, seconds // 3600
-    if hours:
-        return f"{hours}h{minutes}m"
-    return f"{minutes}m"
+    return age_text(datetime.now(tz=timezone.utc) - captured)

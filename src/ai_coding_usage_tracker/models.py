@@ -49,6 +49,12 @@ class PlanStatus:
     subscription: SubscriptionInfo | None = None
     quotas: list[QuotaWindow] = field(default_factory=list)
     note: str | None = None
+    # When the snapshot behind `quotas` was captured, and by which channel.
+    # Kept as data rather than baked into `note`: the age is rendered at
+    # display time, so a cached row cannot claim a capture is fresher than
+    # it is.
+    quotas_captured_at: datetime | None = None
+    quotas_source: str | None = None
 
 
 @dataclass(frozen=True)

@@ -23,6 +23,7 @@ from .discovery import (
     sanitize_minimax_host,
 )
 from .models import PlanStatus, UsageRecord
+from .parsing import age_text
 from .providers import claude, claude_limits, claude_profile, codex
 from .scan import collect_scan
 from .tracker import DEFAULT_CACHE_TTL, collect_statuses
@@ -165,6 +166,27 @@ def _fmt_subscription(status: PlanStatus) -> str:
     return " ".join(parts) if parts else "-"
 
 
+def _fmt_note(status: PlanStatus) -> str:
+    """Render the Note cell, ageing the rate-limit capture at display time.
+
+    The age is never stored: a row served from the status cache would
+    otherwise keep repeating how old the capture was when the row was
+    written, which reads as fresher than the truth.
+    """
+    parts: list[str] = []
+    captured = status.quotas_captured_at
+    if captured is not None:
+        age = age_text(datetime.now(tz=timezone.utc) - captured)
+        if status.quotas:
+            source = status.quotas_source or claude_limits.SOURCE_STATUSLINE
+            parts.append(f"rate limits as of {age} ago ({source})")
+        else:
+            parts.append(f"stale capture ({age} ago); open a Claude Code session to refresh")
+    if status.note:
+        parts.append(status.note)
+    return escape("; ".join(parts))
+
+
 def _fmt_time_left(resets_at: datetime, tz: timezone | ZoneInfo) -> str:
     """Format the time until a window resets, e.g. '2h5m left' or '5d3h left'."""
     seconds = (resets_at - datetime.now(tz)).total_seconds()
@@ -234,7 +256,7 @@ def status(
             _fmt_subscription(item),
             _quota_text(item, "5h", tz),
             _quota_text(item, "weekly", tz),
-            escape(item.note) if item.note else "",
+            _fmt_note(item),
         )
     console.print(table)
 

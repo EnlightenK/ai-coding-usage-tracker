@@ -9,10 +9,19 @@ from pathlib import Path
 from . import paths, store
 from .discovery import DiscoveredPlan, discover_plans
 from .models import PlanStatus, QuotaWindow, SubscriptionInfo
-from .parsing import parse_iso
+from .parsing import age_text, parse_iso
 from .providers import claude, claude_limits, claude_profile, codex, minimax, zai
 
 DEFAULT_CACHE_TTL = 300.0
+# Note fragments that describe the rate-limit capture. Rows cached before the
+# age moved to display time carry them - with the age frozen at write time -
+# so they are dropped when the live capture is overlaid.
+CAPTURE_NOTE_PREFIXES = (
+    "rate limits as of ",
+    "rate limits refreshed via ",
+    "stale capture (",
+    "open a Claude Code session to refresh",
+)
 
 
 def collect_statuses(
@@ -36,8 +45,10 @@ def collect_statuses(
             cached = _status_from_payload(payload)
             if cached is None:
                 continue
-            age = _age_text(datetime.now(tz=timezone.utc) - stored_at)
+            age = age_text(datetime.now(tz=timezone.utc) - stored_at)
             cached.note = f"{cached.note}; cached {age} ago" if cached.note else f"cached {age} ago"
+            if cached.plan_id == "claude-code":
+                _overlay_claude_limits(cached, home)
             results[index] = cached
     missing = [plan for plan, result in zip(plans, results, strict=True) if result is None]
     if missing:
@@ -51,14 +62,30 @@ def collect_statuses(
     return [status for status in results if status is not None]
 
 
-def _age_text(delta: datetime) -> str:
-    seconds = max(0, int(delta.total_seconds()))
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes, hours = seconds % 3600 // 60, seconds // 3600
-    if hours:
-        return f"{hours}h{minutes}m"
-    return f"{minutes}m"
+def _overlay_claude_limits(status: PlanStatus, home: Path) -> None:
+    """Re-read the Claude rate limits over a status row served from the cache.
+
+    The quota windows come from a local snapshot file, not from the network,
+    so caching them in the status store buys nothing and can only hide a newer
+    capture - which is what made `refresh-claude` invisible to `status` for
+    the whole cache TTL.
+    """
+    status.quotas = claude.cached_quotas(home)
+    status.quotas_captured_at = claude_limits.captured_at(home)
+    status.quotas_source = claude_limits.captured_source(home) if status.quotas else None
+    status.note = _without_capture_phrase(status.note)
+
+
+def _without_capture_phrase(note: str | None) -> str | None:
+    """Drop a stored capture phrase from a cached note.
+
+    The caller renders a live one from `quotas_captured_at`; leaving the
+    stored copy in place would print two ages for the same capture.
+    """
+    if not note:
+        return note
+    kept = [part for part in note.split("; ") if not part.startswith(CAPTURE_NOTE_PREFIXES)]
+    return "; ".join(kept) or None
 
 
 def _status_from_payload(payload: dict) -> PlanStatus | None:
@@ -97,6 +124,8 @@ def _status_from_payload(payload: dict) -> PlanStatus | None:
             subscription=subscription,  # type: ignore[arg-type]
             quotas=quotas,
             note=payload.get("note"),
+            quotas_captured_at=parse_iso(payload.get("quotas_captured_at")),
+            quotas_source=payload.get("quotas_source"),
         )
     except (KeyError, TypeError, AttributeError):
         return None
@@ -134,23 +163,19 @@ def _status_for_plan(plan: DiscoveredPlan, home: Path) -> PlanStatus:
     if plan.plan_id == "claude-code":
         subscription, subscription_note = claude.subscription_state(home)
         quotas = claude.cached_quotas(home)
-        age = claude_limits.captured_age(home)
-        if quotas:
-            note = f"rate limits as of {age} ago ({claude_limits.captured_source(home)})"
-        elif claude_limits.load_session_key(home):
+        note = None
+        if not quotas and claude_limits.load_session_key(home):
             success, refresh_note = claude_limits.refresh_from_api(home)
             if success:
                 quotas = claude.cached_quotas(home)
-                note = "rate limits refreshed via claude.ai session"
             else:
-                age = claude_limits.captured_age(home)
                 note = f"session refresh failed: {refresh_note}"
-        elif age is not None:
-            note = f"stale capture ({age} ago); open a Claude Code session to refresh"
-        else:
+        # Read after any refresh above, so it describes the snapshot in hand.
+        captured = claude_limits.captured_at(home)
+        if not quotas and note is None and captured is None:
             note = "rate limits appear once the statusline capture runs in a session"
         subscription_note = _claude_subscription_note(subscription, subscription_note)
-        note = "; ".join(part for part in (note, subscription_note) if part)
+        note = "; ".join(part for part in (note, subscription_note) if part) or None
         return PlanStatus(
             plan_id=plan.plan_id,
             provider=plan.provider,
@@ -162,6 +187,8 @@ def _status_for_plan(plan: DiscoveredPlan, home: Path) -> PlanStatus:
             subscription=subscription,
             quotas=quotas,
             note=note,
+            quotas_captured_at=captured,
+            quotas_source=claude_limits.captured_source(home) if quotas else None,
         )
     if plan.plan_id == "chatgpt-codex":
         subscription = codex.subscription_status(home)

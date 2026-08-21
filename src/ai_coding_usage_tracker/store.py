@@ -155,7 +155,7 @@ def record_status(home: Path | None, statuses: list[PlanStatus]) -> None:
                     for quota in status.quotas
                 ]
             ),
-            status.note,
+            _snapshot_note(status),
         )
         for status in statuses
     ]
@@ -193,6 +193,19 @@ def record_status(home: Path | None, statuses: list[PlanStatus]) -> None:
                 for status in statuses
             ],
         )
+
+
+def _snapshot_note(status: PlanStatus) -> str | None:
+    """Note text for a history row, keeping which channel captured the quotas.
+
+    A history row is read long after it was written, so the *source* of the
+    numbers is worth recording; how old the capture was at write time is not,
+    and is rendered live from `quotas_captured_at` instead.
+    """
+    parts = [f"rate limits from {status.quotas_source}"] if status.quotas_source else []
+    if status.note:
+        parts.append(status.note)
+    return "; ".join(parts) or None
 
 
 def _status_payload(status: PlanStatus) -> dict:

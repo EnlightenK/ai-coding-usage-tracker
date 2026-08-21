@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -58,3 +58,18 @@ def positive_int(value: object) -> int:
 def now_ms() -> int:
     """Current UTC time as epoch milliseconds."""
     return int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+
+
+def age_text(delta: timedelta) -> str:
+    """Format an elapsed time compactly, e.g. '42s', '5m' or '2h5m'.
+
+    Negative deltas (a clock that moved backwards) render as '0s' rather
+    than a nonsense age.
+    """
+    seconds = max(0, int(delta.total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, hours = seconds % 3600 // 60, seconds // 3600
+    if hours:
+        return f"{hours}h{minutes}m"
+    return f"{minutes}m"

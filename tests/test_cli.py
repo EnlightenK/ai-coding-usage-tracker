@@ -473,6 +473,39 @@ def test_history_rejects_unknown_plan(fake_env: pytest.MonkeyPatch, home: Path) 
     assert runner.invoke(app, ["history", "status", "--plan", "nope"]).exit_code == 2
 
 
+def test_status_ages_the_capture_at_display_time(
+    fake_env: pytest.MonkeyPatch, home: Path
+) -> None:
+    """A note served from the status cache must not keep quoting a stale age."""
+    from rich.console import Console
+
+    from ai_coding_usage_tracker import cli
+    from ai_coding_usage_tracker.providers import claude_limits
+
+    # Wide enough that the Note cell is not folded across lines.
+    fake_env.setattr(cli, "console", Console(color_system=None, width=400))
+    claude_limits.capture_from_statusline_json(
+        {"rate_limits": {"five_hour": {"used_percentage": 23.5}}}, home
+    )
+    first = runner.invoke(app, ["status"])
+    assert first.exit_code == 0
+    assert "rate limits as of 0s ago" in first.output
+
+    # Backdate the capture (still inside the 6h freshness limit) without
+    # touching the status cache, exactly as a quiet statusline does.
+    target = claude_limits.cache_file(home)
+    snapshot = json.loads(target.read_text(encoding="utf-8"))
+    snapshot["captured_at"] = (
+        datetime.now(tz=timezone.utc) - timedelta(hours=2)
+    ).isoformat()
+    target.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    second = runner.invoke(app, ["status"])
+    assert second.exit_code == 0
+    assert "rate limits as of 2h0m ago" in second.output
+    assert "rate limits as of 0s ago" not in second.output
+
+
 def test_status_escapes_markup_in_provider_notes(
     fake_env: pytest.MonkeyPatch, home: Path
 ) -> None:

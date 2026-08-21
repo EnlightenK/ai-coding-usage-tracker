@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from conftest import claude_profile_payload, write_profile_cache
 
 from ai_coding_usage_tracker.providers import claude, claude_limits
 
@@ -45,10 +46,7 @@ def test_cached_quotas_converted(home: Path) -> None:
 
 def test_stale_cache_ignored(home: Path) -> None:
     claude_limits.capture_from_statusline_json(STATUSLINE_PAYLOAD, home)
-    target = claude_limits.cache_file(home)
-    snapshot = json.loads(target.read_text(encoding="utf-8"))
-    snapshot["captured_at"] = "2020-01-01T00:00:00+00:00"
-    target.write_text(json.dumps(snapshot), encoding="utf-8")
+    _age_snapshot(home, "2020-01-01T00:00:00+00:00")
     assert claude_limits.load_cached(home) is None
     assert claude.cached_quotas(home) == []
 
@@ -67,30 +65,119 @@ def test_captured_age_formats(home: Path) -> None:
 
 def test_captured_age_missing_cache(home: Path) -> None:
     assert claude_limits.captured_age(home) is None
+    assert claude_limits.captured_at(home) is None
 
 
-def test_tracker_notes_fresh_capture(home: Path) -> None:
+def test_captured_at_survives_a_stale_snapshot(home: Path) -> None:
+    """The age must stay reportable after the windows themselves expire."""
+    claude_limits.capture_from_statusline_json(STATUSLINE_PAYLOAD, home)
+    _age_snapshot(home, "2020-01-01T00:00:00+00:00")
+    captured = claude_limits.captured_at(home)
+    assert captured is not None and captured.year == 2020
+
+
+def test_tracker_reports_fresh_capture(home: Path) -> None:
     from ai_coding_usage_tracker.tracker import collect_statuses
 
     claude_limits.capture_from_statusline_json(STATUSLINE_PAYLOAD, home)
     statuses = {s.plan_id: s for s in collect_statuses(home)}
     claude_status = statuses["claude-code"]
-    assert "rate limits as of" in (claude_status.note or "")
     assert claude_status.quotas
+    assert claude_status.quotas_source == claude_limits.SOURCE_STATUSLINE
+    assert claude_status.quotas_captured_at is not None
 
 
-def test_tracker_notes_stale_capture(home: Path) -> None:
+def test_tracker_reports_stale_capture(home: Path) -> None:
     from ai_coding_usage_tracker.tracker import collect_statuses
 
     claude_limits.capture_from_statusline_json(STATUSLINE_PAYLOAD, home)
+    _age_snapshot(home, "2020-01-01T00:00:00+00:00")
+    statuses = {s.plan_id: s for s in collect_statuses(home)}
+    claude_status = statuses["claude-code"]
+    assert not claude_status.quotas
+    # The timestamp survives even though the windows are dropped, so the
+    # table can explain *why* they are missing.
+    assert claude_status.quotas_captured_at is not None
+    assert claude_status.quotas_source is None
+
+
+def test_refresh_reaches_a_cached_status_row(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refresh must be visible to the next `status`, not hidden by the cache.
+
+    The quota windows live in a local snapshot file, so a status row cached
+    from an earlier capture must never outrank what is on disk now.
+    """
+    from ai_coding_usage_tracker.tracker import collect_statuses
+
+    claude_limits.capture_from_statusline_json(STATUSLINE_PAYLOAD, home)
+    first = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    assert {q.kind: q.remaining_percent for q in first.quotas}["5h"] == 76.5
+
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    monkeypatch.setattr(
+        claude_limits.requests,
+        "get",
+        _fake_usage_api({"five_hour": {"utilization": 63.0}}),
+    )
+    assert claude_limits.refresh_from_api(home)[0]
+
+    # Well inside the status cache TTL: the row is a hit, and must still
+    # report the number the refresh just wrote.
+    second = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    assert "cached" in (second.note or "")
+    assert {q.kind: q.remaining_percent for q in second.quotas}["5h"] == 37.0
+    assert second.quotas_source == claude_limits.SOURCE_ACCOUNT_SESSION
+
+
+def test_history_records_the_capture_source(home: Path) -> None:
+    """A history row must still say which channel produced the numbers."""
+    from ai_coding_usage_tracker import store
+    from ai_coding_usage_tracker.tracker import collect_statuses
+
+    claude_limits.capture_from_statusline_json(STATUSLINE_PAYLOAD, home)
+    collect_statuses(home)
+    rows = {r["plan_id"]: r for r in store.status_history(home, hours=1)}
+    assert claude_limits.SOURCE_STATUSLINE in (rows["claude-code"]["note"] or "")
+
+
+def test_cached_row_drops_a_stored_capture_phrase(home: Path) -> None:
+    """A row cached by an older version must not print two capture ages."""
+    from ai_coding_usage_tracker import store
+    from ai_coding_usage_tracker.models import PlanStatus
+    from ai_coding_usage_tracker.tracker import collect_statuses
+
+    claude_limits.capture_from_statusline_json(STATUSLINE_PAYLOAD, home)
+    store.record_status(
+        home,
+        [
+            PlanStatus(
+                plan_id="claude-code",
+                provider="Anthropic",
+                name="Claude Code (Anthropic)",
+                region=None,
+                auth_kind="oauth",
+                configured=True,
+                active=True,
+                note="rate limits as of 42s ago (statusline capture); subscription canceled",
+            )
+        ],
+    )
+    status = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    assert "cached" in (status.note or "")
+    assert "rate limits as of" not in (status.note or "")
+    # Unrelated parts of the stored note survive the strip.
+    assert "subscription canceled" in (status.note or "")
+    assert status.quotas_captured_at is not None
+
+
+def _age_snapshot(home: Path, captured_at: str) -> None:
+    """Backdate the cached snapshot to a given ISO timestamp."""
     target = claude_limits.cache_file(home)
     snapshot = json.loads(target.read_text(encoding="utf-8"))
-    snapshot["captured_at"] = "2020-01-01T00:00:00+00:00"
+    snapshot["captured_at"] = captured_at
     target.write_text(json.dumps(snapshot), encoding="utf-8")
-    statuses = {s.plan_id: s for s in collect_statuses(home)}
-    claude_status = statuses["claude-code"]
-    assert "stale capture" in (claude_status.note or "")
-    assert not claude_status.quotas
 
 
 def test_session_key_from_env(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -299,6 +386,62 @@ def _fake_usage_api(payload: dict):
     return fake_get
 
 
+def _profile_denied_api(payload: dict, seen: list[str]):
+    """Fake an API where the profile endpoint accepts no token we hold.
+
+    That is the real state whenever the Claude Code OAuth token has expired:
+    the endpoint wants an OAuth token, and the session key is not one.
+    """
+
+    def fake_get(url: str, headers: dict, timeout: float) -> _FakeResponse:
+        seen.append(url)
+        if url.endswith("/oauth/profile"):
+            return _FakeResponse(401, {"error": {"type": "authentication_error"}})
+        if url.endswith("/usage"):
+            return _FakeResponse(200, payload)
+        if url.endswith("/rate_limits"):
+            return _FakeResponse(200, {"rate_limit_tier": "default_claude_ai"})
+        raise AssertionError(f"unexpected url: {url}")
+
+    return fake_get
+
+
+def test_refresh_uses_the_cached_org_uuid_when_the_profile_is_denied(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refresh exists for when Claude Code is closed - so it must survive
+    that program's OAuth token expiring, which is what closing it leads to."""
+    write_profile_cache(home, claude_profile_payload(uuid="org-cached"))
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    seen: list[str] = []
+    monkeypatch.setattr(
+        claude_limits.requests,
+        "get",
+        _profile_denied_api({"five_hour": {"utilization": 44.0}}, seen),
+    )
+    success, note = claude_limits.refresh_from_api(home)
+    assert success, note
+    assert any("org-cached/usage" in url for url in seen)
+    quotas = {q.kind: q.remaining_percent for q in claude.cached_quotas(home)}
+    assert quotas["5h"] == 56.0
+
+
+def test_refresh_reports_every_credential_it_tried(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no cached profile either, the note must name what was attempted
+    rather than blaming whichever credential happened to be tried last."""
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    monkeypatch.setattr(
+        claude_limits.requests, "get", _profile_denied_api({}, [])
+    )
+    success, note = claude_limits.refresh_from_api(home)
+    assert not success
+    assert "session key" in (note or "")
+    assert "claude code oauth" in (note or "")
+    assert "no cached profile" in (note or "")
+
+
 def test_refresh_parses_the_account_usage_shape(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -374,9 +517,9 @@ def test_tracker_attributes_an_api_refresh_to_the_session(
     )
     assert claude_limits.refresh_from_api(home)[0]
     assert claude_limits.captured_source(home) == claude_limits.SOURCE_ACCOUNT_SESSION
-    note = {s.plan_id: s for s in collect_statuses(home)}["claude-code"].note or ""
-    assert "claude.ai session" in note
-    assert "statusline capture" not in note
+    status = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    assert status.quotas_source == claude_limits.SOURCE_ACCOUNT_SESSION
+    assert status.quotas_source != claude_limits.SOURCE_STATUSLINE
 
 
 def test_captured_source_defaults_for_pre_field_snapshots(home: Path) -> None:

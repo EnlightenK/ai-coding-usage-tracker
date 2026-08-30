@@ -6,20 +6,24 @@ and ChatGPT Codex — in one table.
 
 ```
 $ plantrack status
-                                                       AI Coding Plans (reset times in HKT (UTC+08:00))
-+--------------------------------------------------------------------------------------------------------------------+
-| Plan                        | Auth    | Active | Subscription   | 5h used                      | Weekly used                  |
-|-----------------------------+---------+--------+----------------+------------------------------+------------------------------|
-| MiniMax Coding Plan (CN)    | api-key | yes    | active (local) | 8% used (reset 2026-08-16 20:00) | 22% used (reset 2026-08-17 00:00) |
-| MiniMax Coding Plan (Intl)  | api-key | no     | active (local) | -                            | -                            |
-| GLM Coding Plan (Z.ai Intl) | api-key | yes    | pro            | 55% used (reset 2026-08-16 17:04) | 28% used (reset 2026-08-17 01:09) |
-| Claude Code (Anthropic)     | oauth   | yes    | pro            | 39% used (reset 2026-08-16 16:50) | 33% used (reset 2026-08-16 20:00) |
-| ChatGPT Codex (OpenAI)      | oauth   | yes    | plus 25d left  | -                            | -                            |
-+--------------------------------------------------------------------------------------------------------------------+
+                                                                                  AI Coding Plans (reset times in HKT (UTC+08:00))
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Plan                        | Auth    | Active | Subscription   | 5h used                                       | Weekly used                                   | Note                                          |
+|-----------------------------+---------+--------+----------------+-----------------------------------------------+-----------------------------------------------+-----------------------------------------------|
+| MiniMax Coding Plan (CN)    | api-key | yes    | active (local) | 8% used, 5h0m left (reset 2026-08-16 20:00)   | 22% used, 9h0m left (reset 2026-08-17 00:00)  |                                               |
+| MiniMax Coding Plan (Intl)  | api-key | no     | active (local) | -                                             | -                                             | API error 2062: no active subscription        |
+| GLM Coding Plan (Z.ai Intl) | api-key | yes    | pro            | 55% used, 2h4m left (reset 2026-08-16 17:04)  | 28% used, 10h9m left (reset 2026-08-17 01:09) |                                               |
+| Claude Code (Anthropic)     | oauth   | yes    | pro            | 39% used, 1h50m left (reset 2026-08-16 16:50) | 33% used, 5h0m left (reset 2026-08-16 20:00)  | rate limits as of 3m ago (statusline capture) |
+| ChatGPT Codex (OpenAI)      | oauth   | yes    | plus 25d left  | -                                             | -                                             | Codex returned no active quota windows        |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 ```
 
 Windows are shown as **used** percentages (the same convention as the claude.ai
 usage bar, the MiniMax console and the Z.ai console).
+
+The `Note` column is where the table explains itself: how old the Claude
+statusline capture is, whether the row was served from the status cache, and
+any error a provider returned.
 
 ## Install
 
@@ -296,14 +300,56 @@ Play Store keep a permanently `incomplete` record on Anthropic's side because a
 third party collects the payment, so that value is carried in `--json` but
 never shown as a warning.
 
-### Claude statusline capture (automatic)
+### Claude statusline capture (set this up once)
 
-A wrapper at `~/.claude/statusline-wrapper.sh` tees the JSON Claude Code feeds
-to the status line into `plantrack capture-claude`, caching the 5h/7d windows
-to `~/.local/ptk/claude-rate-limits.json`. Your original
-`statusline-command.sh` still renders unchanged. The statusLine entry in
-`~/.claude/settings.json` refreshes every 5 minutes, so any open Claude Code
-session keeps the numbers current — no manual action needed.
+Claude Code pipes a JSON blob to its status line command on every refresh, and
+that blob carries the account's 5h/7d rate-limit windows. Capturing it is the
+primary way Claude quota windows reach plantrack: without it the Claude row has
+no windows and you need a claude.ai session key (see `refresh-claude` above)
+instead.
+
+This repository ships the wrapper that does the capture,
+[`scripts/statusline-wrapper.sh`](scripts/statusline-wrapper.sh). It reads the
+blob once and feeds the same bytes to two consumers: `ptk capture-claude`,
+which caches the windows in `~/.local/ptk/claude-rate-limits.json`, and your own
+statusline command, whose output still renders as the status line unchanged.
+
+Install it:
+
+```bash
+cp scripts/statusline-wrapper.sh ~/.claude/statusline-wrapper.sh
+chmod +x ~/.claude/statusline-wrapper.sh
+```
+
+Then point the `statusLine` entry of `~/.claude/settings.json` at the wrapper,
+passing your existing statusline command as its argument:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline-wrapper.sh ~/.claude/statusline-command.sh"
+  }
+}
+```
+
+If you have no statusline command of your own yet, drop the argument — the
+wrapper then only captures, and the status line stays empty. Two environment
+variables cover the awkward cases: `PLANTRACK_STATUSLINE_COMMAND` gives the
+wrapped command as a shell string (so it can carry its own arguments), and
+`PLANTRACK_PTK` gives the path to the executable when `ptk` is not on the PATH
+Claude Code runs commands with (`uv tool install .` puts it there).
+
+The capture is best effort by design: a missing `ptk`, a rejected payload or a
+hung capture can never break the status line or leak output into it. Claude Code
+refreshes the status line roughly every 5 minutes, so any open session keeps the
+numbers current — no manual action needed. To confirm it is working, open a
+Claude Code session and then check the cache:
+
+```bash
+cat ~/.local/ptk/claude-rate-limits.json
+uv run ptk status                    # the Claude row now shows both windows
+```
 
 ### Scheduled monitoring
 
@@ -361,14 +407,21 @@ credentials.
 ## Development
 
 ```bash
-uv run pytest           # run the test suite
-uv run pytest -q        # quiet mode
-uv run ruff check .     # lint (config in pyproject.toml)
+uv run pytest                # run the test suite
+uv run pytest -q             # quiet mode
+uv run ruff check .          # lint (config in pyproject.toml)
+uv run ruff format --check . # formatting
+uv lock --check              # uv.lock is in sync with pyproject.toml
 ```
+
+GitHub Actions runs exactly these four checks on every push and pull request
+(`.github/workflows/ci.yml`), on the Python version pinned in `.python-version`.
 
 Project layout:
 
 ```
+scripts/
+└── statusline-wrapper.sh   # Claude statusline tee into `ptk capture-claude`
 src/ai_coding_usage_tracker/
 ├── cli.py              # Typer commands (status, usage, plan, scan, ...)
 ├── config.py           # user config: disabled plans and manual API keys
@@ -392,3 +445,7 @@ src/ai_coding_usage_tracker/
 
 Use `PLANTRACK_HOME=<dir>` to point discovery at a fake home directory
 (used by the tests).
+
+## License
+
+[MIT](LICENSE) © 2026 EnlightenK

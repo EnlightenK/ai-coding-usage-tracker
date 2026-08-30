@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
 
 import pytest
-from conftest import claude_profile_payload, write_profile_cache
+from conftest import REAL_REFRESH_FROM_API, claude_profile_payload, write_profile_cache
 
 from ai_coding_usage_tracker.providers import claude, claude_limits
+
+# Real organization uuids are canonical UUIDs, and only those are accepted:
+# the value is spliced into an authenticated request path.
+ORG_UUID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+CACHED_ORG_UUID = "6ba7b810-9dad-41d1-80b4-00c04fd430c8"
 
 STATUSLINE_PAYLOAD = {
     "session_id": "abc123",
@@ -121,7 +127,7 @@ def test_refresh_reaches_a_cached_status_row(
         "get",
         _fake_usage_api({"five_hour": {"utilization": 63.0}}),
     )
-    assert claude_limits.refresh_from_api(home)[0]
+    assert REAL_REFRESH_FROM_API(home)[0]
 
     # Well inside the status cache TTL: the row is a hit, and must still
     # report the number the refresh just wrote.
@@ -251,7 +257,7 @@ def test_session_key_absent(home: Path) -> None:
 
 
 def test_refresh_without_key(home: Path) -> None:
-    success, note = claude_limits.refresh_from_api(home)
+    success, note = REAL_REFRESH_FROM_API(home)
     assert not success
     assert "no claude.ai session key" in (note or "")
 
@@ -272,7 +278,7 @@ def test_refresh_success_via_api(home: Path, monkeypatch: pytest.MonkeyPatch) ->
         if url.endswith("/oauth/profile"):
             return FakeResponse(
                 200,
-                {"organization": {"uuid": "org-123"}},
+                {"organization": {"uuid": ORG_UUID}},
             )
         if url.endswith("/usage"):
             return FakeResponse(404, {})
@@ -287,7 +293,7 @@ def test_refresh_success_via_api(home: Path, monkeypatch: pytest.MonkeyPatch) ->
         raise AssertionError(f"unexpected url: {url}")
 
     monkeypatch.setattr(claude_limits.requests, "get", fake_get)
-    success, note = claude_limits.refresh_from_api(home)
+    success, note = REAL_REFRESH_FROM_API(home)
     assert success
     assert note is None
     quotas = {q.kind: q for q in claude.cached_quotas(home)}
@@ -311,7 +317,7 @@ def test_refresh_finds_windows_nested_in_the_usage_payload(
 
     def fake_get(url: str, headers: dict, timeout: float) -> FakeResponse:
         if url.endswith("/oauth/profile"):
-            return FakeResponse(200, {"organization": {"uuid": "org-123"}})
+            return FakeResponse(200, {"organization": {"uuid": ORG_UUID}})
         if url.endswith("/rate_limits"):
             return FakeResponse(403, {})
         if url.endswith("/usage"):
@@ -322,7 +328,7 @@ def test_refresh_finds_windows_nested_in_the_usage_payload(
         raise AssertionError(f"unexpected url: {url}")
 
     monkeypatch.setattr(claude_limits.requests, "get", fake_get)
-    success, note = claude_limits.refresh_from_api(home)
+    success, note = REAL_REFRESH_FROM_API(home)
     assert success
     quotas = {q.kind: q for q in claude.cached_quotas(home)}
     assert quotas["5h"].remaining_percent == 45.0
@@ -341,11 +347,11 @@ def test_refresh_rejected_session(home: Path, monkeypatch: pytest.MonkeyPatch) -
 
     def fake_get(url: str, headers: dict, timeout: float) -> FakeResponse:
         if url.endswith("/oauth/profile"):
-            return FakeResponse(200, {"organization": {"uuid": "org-123"}})
+            return FakeResponse(200, {"organization": {"uuid": ORG_UUID}})
         return FakeResponse(403, {})
 
     monkeypatch.setattr(claude_limits.requests, "get", fake_get)
-    success, note = claude_limits.refresh_from_api(home)
+    success, note = REAL_REFRESH_FROM_API(home)
     assert not success
     assert "rejected" in (note or "")
 
@@ -375,7 +381,7 @@ def _fake_usage_api(payload: dict):
 
     def fake_get(url: str, headers: dict, timeout: float) -> _FakeResponse:
         if url.endswith("/oauth/profile"):
-            return _FakeResponse(200, {"organization": {"uuid": "org-123"}})
+            return _FakeResponse(200, {"organization": {"uuid": ORG_UUID}})
         if url.endswith("/usage"):
             return _FakeResponse(200, payload)
         if url.endswith("/rate_limits"):
@@ -411,7 +417,7 @@ def test_refresh_uses_the_cached_org_uuid_when_the_profile_is_denied(
 ) -> None:
     """The refresh exists for when Claude Code is closed - so it must survive
     that program's OAuth token expiring, which is what closing it leads to."""
-    write_profile_cache(home, claude_profile_payload(uuid="org-cached"))
+    write_profile_cache(home, claude_profile_payload(uuid=CACHED_ORG_UUID))
     monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
     seen: list[str] = []
     monkeypatch.setattr(
@@ -419,9 +425,9 @@ def test_refresh_uses_the_cached_org_uuid_when_the_profile_is_denied(
         "get",
         _profile_denied_api({"five_hour": {"utilization": 44.0}}, seen),
     )
-    success, note = claude_limits.refresh_from_api(home)
+    success, note = REAL_REFRESH_FROM_API(home)
     assert success, note
-    assert any("org-cached/usage" in url for url in seen)
+    assert any(f"{CACHED_ORG_UUID}/usage" in url for url in seen)
     quotas = {q.kind: q.remaining_percent for q in claude.cached_quotas(home)}
     assert quotas["5h"] == 56.0
 
@@ -435,7 +441,7 @@ def test_refresh_reports_every_credential_it_tried(
     monkeypatch.setattr(
         claude_limits.requests, "get", _profile_denied_api({}, [])
     )
-    success, note = claude_limits.refresh_from_api(home)
+    success, note = REAL_REFRESH_FROM_API(home)
     assert not success
     assert "session key" in (note or "")
     assert "claude code oauth" in (note or "")
@@ -467,7 +473,7 @@ def test_refresh_parses_the_account_usage_shape(
             }
         ),
     )
-    success, note = claude_limits.refresh_from_api(home)
+    success, note = REAL_REFRESH_FROM_API(home)
     assert success
     assert note is None
     quotas = {q.kind: q for q in claude.cached_quotas(home)}
@@ -494,7 +500,7 @@ def test_refresh_never_clobbers_a_capture_with_percentless_windows(
             }
         ),
     )
-    success, note = claude_limits.refresh_from_api(home)
+    success, note = REAL_REFRESH_FROM_API(home)
     assert not success
     assert "usage shape unknown" in (note or "")
     quotas = {q.kind: q for q in claude.cached_quotas(home)}
@@ -515,7 +521,7 @@ def test_tracker_attributes_an_api_refresh_to_the_session(
         "get",
         _fake_usage_api({"five_hour": {"utilization": 32.0}}),
     )
-    assert claude_limits.refresh_from_api(home)[0]
+    assert REAL_REFRESH_FROM_API(home)[0]
     assert claude_limits.captured_source(home) == claude_limits.SOURCE_ACCOUNT_SESSION
     status = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
     assert status.quotas_source == claude_limits.SOURCE_ACCOUNT_SESSION
@@ -530,3 +536,88 @@ def test_captured_source_defaults_for_pre_field_snapshots(home: Path) -> None:
     del snapshot["source"]
     target.write_text(json.dumps(snapshot), encoding="utf-8")
     assert claude_limits.captured_source(home) == claude_limits.SOURCE_STATUSLINE
+
+
+def test_org_uuid_accepts_only_canonical_uuids() -> None:
+    """The uuid lands in an authenticated request path, so its shape is checked."""
+    assert claude_limits._org_uuid({"organization": {"uuid": ORG_UUID}}) == ORG_UUID
+    upper = ORG_UUID.upper()
+    assert claude_limits._org_uuid({"organization": {"uuid": upper}}) == upper
+    for hostile in (
+        "../../organizations/someone-else",
+        "org-123",
+        f"{ORG_UUID}/../admin",
+        f"{ORG_UUID}?x=1",
+        "",
+        None,
+        12345,
+    ):
+        assert claude_limits._org_uuid({"organization": {"uuid": hostile}}) is None
+    assert claude_limits._org_uuid({"organization": "not a dict"}) is None
+    assert claude_limits._org_uuid("not a payload") is None
+
+
+def test_refresh_requests_the_uuid_path_verbatim(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A well-formed uuid survives percent-encoding unchanged."""
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    seen: list[str] = []
+    inner = _fake_usage_api({"five_hour": {"utilization": 10.0}})
+
+    def fake_get(url: str, headers: dict, timeout: float) -> _FakeResponse:
+        seen.append(url)
+        return inner(url, headers, timeout)
+
+    monkeypatch.setattr(claude_limits.requests, "get", fake_get)
+    assert REAL_REFRESH_FROM_API(home)[0]
+    assert f"{claude_limits.API_BASE}/organizations/{ORG_UUID}/usage" in seen
+
+
+def test_refresh_refuses_a_tampered_org_uuid_from_the_profile_cache(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rewritten profile cache must not steer the authenticated request.
+
+    The cache is a plain file, and the fallback path reads the uuid straight
+    out of it, so a path fragment stored there would otherwise present the
+    session key at an endpoint of the writer's choosing.
+    """
+    write_profile_cache(home, claude_profile_payload(uuid="../../admin/keys"))
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    seen: list[str] = []
+    monkeypatch.setattr(claude_limits.requests, "get", _profile_denied_api({}, seen))
+    success, note = REAL_REFRESH_FROM_API(home)
+    assert not success
+    assert "no cached profile" in (note or "")
+    assert seen and all(url == claude_limits.PROFILE_URL for url in seen)
+
+
+def test_inherited_session_key_env_is_cleared(home: Path) -> None:
+    """No test may inherit a developer's live claude.ai cookie.
+
+    Exporting PLANTRACK_CLAUDE_SESSION_KEY is what the README tells users to
+    do, and `load_session_key` reads the environment before the fixture home,
+    so an unclean environment used to ship that cookie to api.anthropic.com on
+    every `pytest` run.
+    """
+    inherited = [n for n in os.environ if n.startswith("PLANTRACK_")]
+    # The suite pins PLANTRACK_HOME itself; nothing else may survive.
+    assert inherited == ["PLANTRACK_HOME"]
+    assert claude_limits.load_session_key(home) is None
+
+
+def test_refresh_is_blocked_from_reaching_the_network(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even with a session key in hand, the autouse guard stops the fetch."""
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+
+    def explode(*_: object, **__: object) -> object:
+        raise AssertionError("the guarded refresh reached the network")
+
+    monkeypatch.setattr(claude_limits.requests, "get", explode)
+    assert claude_limits.refresh_from_api is not REAL_REFRESH_FROM_API
+    success, note = claude_limits.refresh_from_api(home)
+    assert not success
+    assert "disabled in tests" in (note or "")

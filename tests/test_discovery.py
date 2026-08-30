@@ -9,24 +9,20 @@ from ai_coding_usage_tracker import config
 from ai_coding_usage_tracker.discovery import (
     MINIMAX_DEFAULT_HOSTS,
     discover_plans,
+    is_zai_base_url,
     sanitize_minimax_host,
 )
 
 
-def _write_claude_settings(home: Path, filename: str, base_url: str) -> None:
+def _write_claude_settings(
+    home: Path, filename: str, base_url: str | None = None
+) -> None:
     settings = home / ".claude" / filename
     settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(
-        json.dumps(
-            {
-                "env": {
-                    "ANTHROPIC_AUTH_TOKEN": "key-from-settings",
-                    "ANTHROPIC_BASE_URL": base_url,
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
+    env: dict[str, str] = {"ANTHROPIC_AUTH_TOKEN": "key-from-settings"}
+    if base_url is not None:
+        env["ANTHROPIC_BASE_URL"] = base_url
+    settings.write_text(json.dumps({"env": env}), encoding="utf-8")
 
 
 def test_discovers_all_five_plans(home: Path) -> None:
@@ -158,3 +154,79 @@ def test_claude_settings_hostile_base_url_falls_back_to_default(tmp_path: Path) 
     _write_claude_settings(tmp_path, "settings-mx-cn.json", "https://evil.example")
     plans = {p.plan_id: p for p in discover_plans(tmp_path)}
     assert plans["minimax-cn"].api_host == MINIMAX_DEFAULT_HOSTS["minimax-cn"]
+
+
+def test_glm_settings_without_a_base_url_still_matches_on_filename(
+    tmp_path: Path,
+) -> None:
+    """The common case: `settings-glm.json` naming the token and nothing else."""
+    _write_claude_settings(tmp_path, "settings-glm.json")
+    plans = {p.plan_id: p for p in discover_plans(tmp_path)}
+    assert plans["glm-intl"].api_key == "key-from-settings"
+    assert "~/.claude/settings-glm.json" in plans["glm-intl"].key_sources
+
+
+def test_glm_settings_accepts_z_ai_base_urls(tmp_path: Path) -> None:
+    for index, base_url in enumerate(
+        (
+            "https://api.z.ai/api/anthropic",
+            "https://open.z.ai/api/anthropic",
+            "https://z.ai/api/anthropic",
+        )
+    ):
+        fake_home = tmp_path / f"home{index}"
+        _write_claude_settings(fake_home, "settings-glm.json", base_url)
+        plans = {p.plan_id: p for p in discover_plans(fake_home)}
+        assert plans["glm-intl"].api_key == "key-from-settings", base_url
+
+
+def test_glm_settings_for_another_provider_is_skipped(tmp_path: Path) -> None:
+    """A `-glm` filename alone must not decide where a token is sent.
+
+    GLM's quota endpoint is a hardcoded Z.ai URL, so reusing the filename for
+    another Anthropic-compatible provider used to hand that provider's key to
+    Z.ai. A declared non-Z.ai base URL now disqualifies the file instead.
+    """
+    _write_claude_settings(
+        tmp_path, "settings-glm.json", "https://api.some-other-provider.example"
+    )
+    plans = {p.plan_id: p for p in discover_plans(tmp_path)}
+    assert "glm-intl" not in plans
+
+
+def test_glm_settings_key_is_skipped_for_a_lookalike_or_plaintext_host(
+    tmp_path: Path,
+) -> None:
+    for index, base_url in enumerate(
+        (
+            "http://api.z.ai/api/anthropic",
+            "https://z.ai.evil.example/api/anthropic",
+            "https://evil-z.ai/api/anthropic",
+            "https://z.ai@evil.example/api/anthropic",
+            "https://open.bigmodel.cn/api/anthropic",
+            "not a url",
+        )
+    ):
+        fake_home = tmp_path / f"home{index}"
+        _write_claude_settings(fake_home, "settings-glm.json", base_url)
+        plans = {p.plan_id: p for p in discover_plans(fake_home)}
+        assert "glm-intl" not in plans, base_url
+
+
+def test_glm_settings_key_still_loses_to_an_earlier_source(home: Path) -> None:
+    """A hostile settings file cannot displace the opencode key either."""
+    _write_claude_settings(home, "settings-glm.json", "https://evil.example")
+    plans = {p.plan_id: p for p in discover_plans(home)}
+    assert plans["glm-intl"].api_key == "zai-key"
+
+
+def test_is_zai_base_url() -> None:
+    assert is_zai_base_url("https://api.z.ai/api/anthropic")
+    assert is_zai_base_url("https://z.ai")
+    assert is_zai_base_url("https://api.z.ai:8443/api/anthropic")
+    assert not is_zai_base_url("http://api.z.ai")
+    assert not is_zai_base_url("https://api.z.ai.evil.example")
+    assert not is_zai_base_url("https://evilz.ai")
+    assert not is_zai_base_url("https://open.bigmodel.cn/api/anthropic")
+    assert not is_zai_base_url("")
+    assert not is_zai_base_url("not a url")

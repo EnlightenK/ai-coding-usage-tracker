@@ -506,6 +506,82 @@ def test_status_ages_the_capture_at_display_time(
     assert "rate limits as of 0s ago" not in second.output
 
 
+# An MCP server name is copied verbatim into the key-source string, so a
+# hostile ~/.codex/config.toml decides what the "Key sources" column contains.
+HOSTILE_SERVER = "[bold red]SPOOFED - verified by Anthropic[/bold red]"
+HOSTILE_SOURCE = f"~/.codex/config.toml [{HOSTILE_SERVER}]"
+
+
+def _write_hostile_codex_config(home: Path) -> None:
+    """Point the MiniMax Intl key at an MCP server whose name is rich markup."""
+    (home / ".codex" / "config.toml").write_text(
+        f'[mcp_servers."{HOSTILE_SERVER}"]\n'
+        'command = "uvx"\n'
+        "\n"
+        f'[mcp_servers."{HOSTILE_SERVER}".env]\n'
+        'MINIMAX_API_KEY = "mm-intl-key"\n',
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture
+def wide_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep table cells on one line so literal text survives as a substring."""
+    from rich.console import Console
+
+    from ai_coding_usage_tracker import cli
+
+    monkeypatch.setattr(cli, "console", Console(color_system=None, width=400))
+
+
+def test_plan_list_escapes_markup_in_key_sources(
+    fake_env: pytest.MonkeyPatch, home: Path, wide_console: None
+) -> None:
+    """A hostile MCP server name must not crash `plan list` (unbalanced tags
+    raised MarkupError) nor style the column a user reads to check a key's
+    provenance."""
+    _write_hostile_codex_config(home)
+    result = runner.invoke(app, ["plan", "list"])
+    assert result.exit_code == 0
+    assert HOSTILE_SOURCE in result.output
+
+
+def test_scan_escapes_markup_in_key_sources(
+    fake_env: pytest.MonkeyPatch, home: Path, wide_console: None
+) -> None:
+    _write_hostile_codex_config(home)
+    result = runner.invoke(app, ["scan"])
+    assert result.exit_code == 0
+    assert HOSTILE_SOURCE in result.output
+
+
+def test_plan_list_shows_each_key_source_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wide_console: None
+) -> None:
+    """Discovery already reports a stored key as `plantrack config`; the manual
+    prepend must not print it a second time."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    assert runner.invoke(app, ["plan", "add", "minimax-cn", "--api-key", "k"]).exit_code == 0
+    result = runner.invoke(app, ["plan", "list"])
+    assert result.exit_code == 0
+    assert "tracked" in result.output
+    assert result.output.count("plantrack config") == 1
+
+
+def test_plan_list_keeps_the_source_of_a_disabled_plans_stored_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wide_console: None
+) -> None:
+    """`discover_plans` skips disabled plans, so the manual prepend is the only
+    thing that still says where a disabled plan's key lives."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    runner.invoke(app, ["plan", "add", "minimax-cn", "--api-key", "k"])
+    runner.invoke(app, ["plan", "disable", "minimax-cn"])
+    result = runner.invoke(app, ["plan", "list"])
+    assert result.exit_code == 0
+    assert "disabled" in result.output
+    assert result.output.count("plantrack config") == 1
+
+
 def test_status_escapes_markup_in_provider_notes(
     fake_env: pytest.MonkeyPatch, home: Path
 ) -> None:

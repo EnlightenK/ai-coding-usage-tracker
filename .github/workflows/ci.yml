@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A new push supersedes the run already in flight for the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Tests and lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Read the pinned Python version
+        id: python
+        # .python-version is the single source of truth for the interpreter;
+        # reading it here keeps the workflow from becoming a second copy.
+        run: echo "version=$(cat .python-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          # Pinned so a uv release cannot change lockfile or resolver behaviour
+          # under CI; keep in sync with the uv the project is developed against.
+          version: "0.8.17"
+          python-version: ${{ steps.python.outputs.version }}
+          enable-cache: true
+
+      - name: Check uv.lock is in sync with pyproject.toml
+        # Runs before the install so lockfile drift is reported by this step
+        # rather than as a confusing failure inside `uv sync`.
+        run: uv lock --check
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest
+
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+
+      # Deliberately last: it is the only step expected to fail on the commit
+      # that introduces this workflow, because most of the tree has never been
+      # run through `ruff format`. Keeping it last leaves the test and lint
+      # results visible, and the step starts guarding the tree the moment the
+      # one-off reformat commit lands.
+      - name: Check formatting (ruff format --check)
+        run: uv run ruff format --check .

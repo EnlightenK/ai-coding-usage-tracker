@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -92,6 +93,21 @@ def sanitize_minimax_host(value: str, default: str) -> str:
     return default
 
 
+ZAI_TRUSTED_HOSTNAMES: tuple[str, ...] = ("z.ai",)
+
+
+def is_zai_base_url(value: str) -> bool:
+    """True when an ANTHROPIC_BASE_URL points at a Z.ai-owned https endpoint."""
+    try:
+        parts = urlsplit(value)
+        hostname = (parts.hostname or "").lower()
+    except ValueError:
+        return False
+    if parts.scheme != "https" or not hostname:
+        return False
+    return hostname in ZAI_TRUSTED_HOSTNAMES or hostname.endswith(".z.ai")
+
+
 def _read_toml(path: Path) -> dict | None:
     try:
         with path.open("rb") as fh:
@@ -125,10 +141,22 @@ def _find_minimax_intl_key(home: Path, plan: DiscoveredPlan) -> None:
 
 
 def _find_claude_settings_key(
-    home: Path, filename: str, plan: DiscoveredPlan, default_host: str | None = None
+    home: Path,
+    filename: str,
+    plan: DiscoveredPlan,
+    default_host: str | None = None,
+    trusted_base_url: Callable[[str], bool] | None = None,
 ) -> None:
-    """Attach a key from a Claude settings file; `default_host` only applies to
-    plans whose quota API host can be derived from the base URL (MiniMax)."""
+    """Attach a key from a Claude settings file.
+
+    `default_host` only applies to plans whose quota API host can be derived
+    from the base URL (MiniMax). `trusted_base_url` guards the plans whose
+    quota endpoint is instead a fixed URL (GLM): the filename alone would
+    otherwise decide where the token is sent, so a settings file that declares
+    a base URL for some *other* Anthropic-compatible provider holds that
+    provider's key, and it is skipped rather than handed to Z.ai. A file with
+    no base URL declared is the common case and still matches on filename.
+    """
     settings = read_json_dict(paths.claude_dir(home) / filename)
     if not settings:
         return
@@ -138,6 +166,9 @@ def _find_claude_settings_key(
     key = env.get("ANTHROPIC_AUTH_TOKEN")
     base = env.get("ANTHROPIC_BASE_URL")
     if not isinstance(key, str) or not key:
+        return
+    declared = base.strip() if isinstance(base, str) else ""
+    if trusted_base_url is not None and declared and not trusted_base_url(declared):
         return
     plan.api_key = key
     if isinstance(base, str) and default_host is not None:
@@ -205,7 +236,12 @@ def discover_plans(home: Path | None = None) -> list[DiscoveredPlan]:
 
     glm = ensure("glm-intl", "api-key")
     if not glm.key_sources:
-        _find_claude_settings_key(home, "settings-glm.json", glm)
+        # GLM's quota API lives at a fixed Z.ai URL, so the base URL declared in
+        # the settings file cannot redirect the request - it can only tell us
+        # the token in that file is not a Z.ai one, in which case we skip it.
+        _find_claude_settings_key(
+            home, "settings-glm.json", glm, trusted_base_url=is_zai_base_url
+        )
 
     claude_plan = ensure("claude-code", "oauth")
     credentials = read_json_dict(paths.claude_dir(home) / ".credentials.json")

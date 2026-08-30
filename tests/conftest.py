@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,7 +12,13 @@ import pytest
 from rich.console import Console
 
 from ai_coding_usage_tracker import cli
-from ai_coding_usage_tracker.providers import claude_profile, codex, minimax, zai
+from ai_coding_usage_tracker.providers import (
+    claude_limits,
+    claude_profile,
+    codex,
+    minimax,
+    zai,
+)
 from ai_coding_usage_tracker.providers.codex_app_server import CodexAppServerUnavailable
 
 
@@ -35,13 +42,53 @@ def fake_jwt(claims: dict) -> str:
     return f"{header}.{payload}.signature"
 
 
+# Every PLANTRACK_* variable the package reads, enumerated from the source
+# (paths.HOME_ENV, cli.TZ_ENV/CACHE_TTL_ENV, payload_dump.DUMP_ENV,
+# claude_limits.SESSION_KEY_ENV/SESSION_KEY_FILE_ENV, codex_app_server).
+PLANTRACK_ENV_VARS = (
+    "PLANTRACK_HOME",
+    "PLANTRACK_CLAUDE_SESSION_KEY",
+    "PLANTRACK_SESSION_KEY_FILE",
+    "PLANTRACK_DEBUG_PAYLOAD",
+    "PLANTRACK_CACHE_TTL",
+    "PLANTRACK_TZ",
+    "PLANTRACK_CODEX_EXECUTABLE",
+)
+
+
 @pytest.fixture(autouse=True)
-def isolated_plantrack_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def clean_plantrack_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop every inherited PLANTRACK_* variable before a test runs.
+
+    A developer who followed the README exports PLANTRACK_CLAUDE_SESSION_KEY,
+    which the refresh path reads *before* it consults the fixture home - so
+    without this, running pytest would send that live claude.ai cookie to
+    api.anthropic.com. The other variables are just as capable of steering a
+    run at the developer's real data (PLANTRACK_HOME) or silently changing
+    what the assertions mean (PLANTRACK_TZ, PLANTRACK_CACHE_TTL), so the whole
+    namespace is cleared and each test sets back only what it means to test.
+    """
+    for name in PLANTRACK_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    # The prefix sweep also catches anything added to the package later, so a
+    # new variable cannot reopen this hole before the tuple above is updated.
+    for name in [n for n in os.environ if n.startswith("PLANTRACK_")]:
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def isolated_plantrack_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_plantrack_env: None
+) -> Path:
     """Pin PLANTRACK_HOME to the test's tmp dir for every test.
 
     The CLI callback runs the legacy-path migration against default_home(),
     so without this pin any command-invoking test would migrate (and thus
     touch) the developer's real home directory.
+
+    Depends on `clean_plantrack_env` rather than trusting declaration order:
+    the clearing must happen *before* this fixture sets PLANTRACK_HOME, or it
+    would wipe the pin it is meant to protect.
     """
     monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
     return tmp_path
@@ -73,6 +120,7 @@ def plain_console_output(monkeypatch: pytest.MonkeyPatch) -> None:
 REAL_FETCH_PROFILE = claude_profile.fetch_profile
 REAL_FETCH_REMAINS = minimax.fetch_remains
 REAL_FETCH_LIMITS = zai.fetch_limits
+REAL_REFRESH_FROM_API = claude_limits.refresh_from_api
 
 
 @pytest.fixture(autouse=True)
@@ -100,6 +148,27 @@ def no_real_claude_profile(monkeypatch: pytest.MonkeyPatch) -> None:
         return None, "profile fetch disabled in tests"
 
     monkeypatch.setattr(claude_profile, "fetch_profile", offline)
+
+
+@pytest.fixture(autouse=True)
+def no_real_claude_limits_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never call the Anthropic organization usage API from tests.
+
+    `tracker._status_for_plan` refreshes rate limits whenever a session key
+    resolves, so this is the second way a test run could reach Anthropic.
+    Only the network half is replaced: the "no session key" short-circuit is
+    reproduced faithfully, because callers (the `refresh-claude` command)
+    branch on that note. Tests that drive the real refresh through a fake
+    transport restore it via REAL_REFRESH_FROM_API.
+    """
+    def offline(
+        home: Path | None = None, timeout: float = 15.0
+    ) -> tuple[bool, str | None]:
+        if not claude_limits.load_session_key(home):
+            return False, "no claude.ai session key configured"
+        return False, "rate limit refresh disabled in tests"
+
+    monkeypatch.setattr(claude_limits, "refresh_from_api", offline)
 
 
 def write_profile_cache(

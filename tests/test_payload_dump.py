@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -21,9 +22,20 @@ _ENV_CASES = [
     ("1", True),
     ("true", True),
     ("YES", True),
+    ("on", True),
+    ("  1  ", True),
     ("0", False),
     ("false", False),
     ("no", False),
+    # Dumping is opt-in, so anything that is not an explicit "on" leaves it off.
+    # These three used to ENABLE it, quietly accumulating account emails and
+    # plan state on disk for a user who thought they had switched it off.
+    ("off", False),
+    ("disabled", False),
+    ("none", False),
+    ("", False),
+    ("2", False),
+    ("ture", False),
 ]
 
 
@@ -32,7 +44,14 @@ def test_env_values_gate_dumping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str, expected: bool
 ) -> None:
     monkeypatch.setenv(payload_dump.DUMP_ENV, value)
+    assert payload_dump.enabled() is expected
     assert payload_dump.dump("x", {"a": 1}, tmp_path) is expected
+
+
+def test_inherited_dump_env_is_cleared(tmp_path: Path) -> None:
+    """A developer's exported PLANTRACK_* must not leak into a test run."""
+    assert payload_dump.DUMP_ENV not in os.environ
+    assert not payload_dump.enabled()
 
 
 def test_dump_wraps_and_overwrites(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

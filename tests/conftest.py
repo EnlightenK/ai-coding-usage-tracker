@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,7 +12,13 @@ import pytest
 from rich.console import Console
 
 from ai_coding_usage_tracker import cli
-from ai_coding_usage_tracker.providers import claude_profile, codex, minimax, zai
+from ai_coding_usage_tracker.providers import (
+    claude_limits,
+    claude_profile,
+    codex,
+    minimax,
+    zai,
+)
 from ai_coding_usage_tracker.providers.codex_app_server import CodexAppServerUnavailable
 
 
@@ -22,26 +29,62 @@ def write_json(path: Path, payload: object) -> None:
 
 def write_lines(path: Path, entries: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8"
-    )
+    path.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
 
 
 def fake_jwt(claims: dict) -> str:
     header = base64.urlsafe_b64encode(b'{"alg":"RS256"}').rstrip(b"=").decode()
-    payload = base64.urlsafe_b64encode(
-        json.dumps(claims).encode()
-    ).rstrip(b"=").decode()
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
     return f"{header}.{payload}.signature"
 
 
+# Every PLANTRACK_* variable the package reads, enumerated from the source
+# (paths.HOME_ENV, cli.TZ_ENV/CACHE_TTL_ENV, payload_dump.DUMP_ENV,
+# claude_limits.SESSION_KEY_ENV/SESSION_KEY_FILE_ENV, codex_app_server).
+PLANTRACK_ENV_VARS = (
+    "PLANTRACK_HOME",
+    "PLANTRACK_CLAUDE_SESSION_KEY",
+    "PLANTRACK_SESSION_KEY_FILE",
+    "PLANTRACK_DEBUG_PAYLOAD",
+    "PLANTRACK_CACHE_TTL",
+    "PLANTRACK_TZ",
+    "PLANTRACK_CODEX_EXECUTABLE",
+)
+
+
 @pytest.fixture(autouse=True)
-def isolated_plantrack_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def clean_plantrack_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop every inherited PLANTRACK_* variable before a test runs.
+
+    A developer who followed the README exports PLANTRACK_CLAUDE_SESSION_KEY,
+    which the refresh path reads *before* it consults the fixture home - so
+    without this, running pytest would send that live claude.ai cookie to
+    api.anthropic.com. The other variables are just as capable of steering a
+    run at the developer's real data (PLANTRACK_HOME) or silently changing
+    what the assertions mean (PLANTRACK_TZ, PLANTRACK_CACHE_TTL), so the whole
+    namespace is cleared and each test sets back only what it means to test.
+    """
+    for name in PLANTRACK_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    # The prefix sweep also catches anything added to the package later, so a
+    # new variable cannot reopen this hole before the tuple above is updated.
+    for name in [n for n in os.environ if n.startswith("PLANTRACK_")]:
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def isolated_plantrack_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_plantrack_env: None
+) -> Path:
     """Pin PLANTRACK_HOME to the test's tmp dir for every test.
 
     The CLI callback runs the legacy-path migration against default_home(),
     so without this pin any command-invoking test would migrate (and thus
     touch) the developer's real home directory.
+
+    Depends on `clean_plantrack_env` rather than trusting declaration order:
+    the clearing must happen *before* this fixture sets PLANTRACK_HOME, or it
+    would wipe the pin it is meant to protect.
     """
     monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
     return tmp_path
@@ -50,6 +93,7 @@ def isolated_plantrack_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 @pytest.fixture(autouse=True)
 def no_real_codex_app_server(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep fixture homes hermetic; focused app-server tests opt in explicitly."""
+
     def unavailable(*_: object, **__: object) -> object:
         raise CodexAppServerUnavailable("mocked Codex app-server unavailable")
 
@@ -73,6 +117,7 @@ def plain_console_output(monkeypatch: pytest.MonkeyPatch) -> None:
 REAL_FETCH_PROFILE = claude_profile.fetch_profile
 REAL_FETCH_REMAINS = minimax.fetch_remains
 REAL_FETCH_LIMITS = zai.fetch_limits
+REAL_REFRESH_FROM_API = claude_limits.refresh_from_api
 
 
 @pytest.fixture(autouse=True)
@@ -96,15 +141,34 @@ def no_real_claude_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     Tests that need profile data write a cache file into the fixture home,
     which exercises the parsing path without any patching.
     """
+
     def offline(*_: object, **__: object) -> tuple[None, str]:
         return None, "profile fetch disabled in tests"
 
     monkeypatch.setattr(claude_profile, "fetch_profile", offline)
 
 
-def write_profile_cache(
-    home: Path, profile: dict, fetched_at: datetime | None = None
-) -> None:
+@pytest.fixture(autouse=True)
+def no_real_claude_limits_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never call the Anthropic organization usage API from tests.
+
+    `tracker._status_for_plan` refreshes rate limits whenever a session key
+    resolves, so this is the second way a test run could reach Anthropic.
+    Only the network half is replaced: the "no session key" short-circuit is
+    reproduced faithfully, because callers (the `refresh-claude` command)
+    branch on that note. Tests that drive the real refresh through a fake
+    transport restore it via REAL_REFRESH_FROM_API.
+    """
+
+    def offline(home: Path | None = None, timeout: float = 15.0) -> tuple[bool, str | None]:
+        if not claude_limits.load_session_key(home):
+            return False, "no claude.ai session key configured"
+        return False, "rate limit refresh disabled in tests"
+
+    monkeypatch.setattr(claude_limits, "refresh_from_api", offline)
+
+
+def write_profile_cache(home: Path, profile: dict, fetched_at: datetime | None = None) -> None:
     """Seed the Claude account profile cache inside a fixture home."""
     stamp = fetched_at or datetime.now(tz=timezone.utc)
     write_json(
@@ -184,7 +248,7 @@ def home(tmp_path: Path) -> Path:
         'model = "gpt-5.6-sol"\n'
         "[mcp_servers.MiniMax]\n"
         'command = "uvx"\n'
-        "args = [\"minimax-coding-plan-mcp\"]\n"
+        'args = ["minimax-coding-plan-mcp"]\n'
         "\n"
         "[mcp_servers.MiniMax.env]\n"
         'MINIMAX_API_KEY = "mm-intl-key"\n'
@@ -295,18 +359,18 @@ def home(tmp_path: Path) -> Path:
         },
     ]
     write_lines(
-        tmp_path
-        / ".codex"
-        / "sessions"
-        / "2026"
-        / "08"
-        / "15"
-        / "rollout-demo.jsonl",
+        tmp_path / ".codex" / "sessions" / "2026" / "08" / "15" / "rollout-demo.jsonl",
         codex_session,
     )
 
     write_json(
-        tmp_path / ".local" / "share" / "opencode" / "storage" / "message" / "ses_1"
+        tmp_path
+        / ".local"
+        / "share"
+        / "opencode"
+        / "storage"
+        / "message"
+        / "ses_1"
         / "msg_zai.json",
         {
             "id": "msg_zai",
@@ -316,7 +380,13 @@ def home(tmp_path: Path) -> Path:
         },
     )
     write_json(
-        tmp_path / ".local" / "share" / "opencode" / "storage" / "message" / "ses_1"
+        tmp_path
+        / ".local"
+        / "share"
+        / "opencode"
+        / "storage"
+        / "message"
+        / "ses_1"
         / "msg_other.json",
         {
             "id": "msg_other",
@@ -325,9 +395,7 @@ def home(tmp_path: Path) -> Path:
             "model": {"providerID": "nvidia", "modelID": "llama"},
         },
     )
-    part_dir = (
-        tmp_path / ".local" / "share" / "opencode" / "storage" / "part" / "msg_zai"
-    )
+    part_dir = tmp_path / ".local" / "share" / "opencode" / "storage" / "part" / "msg_zai"
     write_json(
         part_dir / "part_1.json",
         {

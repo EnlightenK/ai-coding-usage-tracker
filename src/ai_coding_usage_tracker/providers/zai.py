@@ -61,9 +61,7 @@ def parse_limits(payload: dict) -> ZaiQuota:
     if isinstance(level, str) and level:
         subscription = SubscriptionInfo(plan_type=level, valid_until=None, days_left=None)
     if not quotas:
-        return ZaiQuota(
-            active=None, subscription=subscription, note="no token limits in response"
-        )
+        return ZaiQuota(active=None, subscription=subscription, note="no token limits in response")
     return ZaiQuota(active=True, quotas=quotas, subscription=subscription)
 
 

@@ -93,9 +93,7 @@ def _trusted_host(host: str) -> bool:
         return False
     if parts.scheme != "https" or not hostname:
         return False
-    return hostname in _TRUSTED_HOSTNAMES or hostname.endswith(
-        (".minimaxi.com", ".minimax.io")
-    )
+    return hostname in _TRUSTED_HOSTNAMES or hostname.endswith((".minimaxi.com", ".minimax.io"))
 
 
 def fetch_remains(api_key: str, host: str, timeout: float = 15.0) -> MiniMaxRemains:

@@ -10,9 +10,7 @@ from ai_coding_usage_tracker.usage import aggregate, collect_usage
 
 
 def _record(day: date, source: str, plan: str, model: str, **tokens: int) -> UsageRecord:
-    return UsageRecord(
-        date=day, source=source, plan_id=plan, model=model, **tokens
-    )
+    return UsageRecord(date=day, source=source, plan_id=plan, model=model, **tokens)
 
 
 def test_aggregate_merges_same_key() -> None:

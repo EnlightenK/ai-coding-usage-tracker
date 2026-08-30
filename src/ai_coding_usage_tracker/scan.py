@@ -55,9 +55,7 @@ def _file_entries(home: Path) -> list[ScanEntry]:
             else:
                 size = stat.st_size
                 modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
-        entries.append(
-            ScanEntry(label, str(path), found, "file", size=size, modified=modified)
-        )
+        entries.append(ScanEntry(label, str(path), found, "file", size=size, modified=modified))
     return entries
 
 

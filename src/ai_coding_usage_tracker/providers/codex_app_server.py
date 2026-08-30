@@ -133,13 +133,17 @@ class CodexAppServer:
         threading.Thread(target=self._drain_stdout, args=(process.stdout,), daemon=True).start()
         threading.Thread(target=self._drain_stderr, args=(process.stderr,), daemon=True).start()
         try:
+            # Imported here, not at module scope: the package __init__ imports
+            # cli, which imports this module, so a top-level import is circular.
+            from .. import __version__
+
             self.request(
                 "initialize",
                 {
                     "clientInfo": {
                         "name": "ai_coding_usage_tracker",
                         "title": "AI Coding Usage Tracker",
-                        "version": "0.1.0",
+                        "version": __version__,
                     }
                 },
             )

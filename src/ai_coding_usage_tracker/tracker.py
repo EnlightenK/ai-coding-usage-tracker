@@ -53,7 +53,7 @@ def collect_statuses(
     missing = [plan for plan, result in zip(plans, results, strict=True) if result is None]
     if missing:
         with ThreadPoolExecutor(max_workers=min(len(missing), 8)) as pool:
-            fetched = list(pool.map(lambda plan: _status_for_plan(plan, home), missing))
+            fetched = list(pool.map(lambda plan: _safe_status_for_plan(plan, home), missing))
         store.record_status(home, fetched)
         fetched_by_id = {status.plan_id: status for status in fetched}
         for index, plan in enumerate(plans):
@@ -129,6 +129,29 @@ def _status_from_payload(payload: dict) -> PlanStatus | None:
         )
     except (KeyError, TypeError, AttributeError):
         return None
+
+
+def _safe_status_for_plan(plan: DiscoveredPlan, home: Path) -> PlanStatus:
+    """Fetch one plan's status, degrading an unexpected failure to a note row.
+
+    `pool.map` re-raises the first worker exception, so without this a single
+    plan blowing up - a provider answering in a shape nobody anticipated -
+    would take every other plan's row down with it and skip the snapshot
+    write entirely. One bad plan costs one row instead.
+    """
+    try:
+        return _status_for_plan(plan, home)
+    except Exception as exc:  # A broken plan must not sink the whole command.
+        return PlanStatus(
+            plan_id=plan.plan_id,
+            provider=plan.provider,
+            name=plan.name,
+            region=plan.region,
+            auth_kind=plan.auth_kind,
+            configured=bool(plan.key_sources),
+            active=None,
+            note=f"status unavailable: {exc}",
+        )
 
 
 def _status_for_plan(plan: DiscoveredPlan, home: Path) -> PlanStatus:
@@ -225,12 +248,8 @@ def _claude_subscription_note(
     parts: list[str] = []
     if subscription is not None:
         if subscription.valid_until is not None:
-            parts.append(
-                f"Claude Code trial ends {subscription.valid_until.date().isoformat()}"
-            )
-        if claude_profile.status_is_concerning(
-            subscription.status, subscription.billing
-        ):
+            parts.append(f"Claude Code trial ends {subscription.valid_until.date().isoformat()}")
+        if claude_profile.status_is_concerning(subscription.status, subscription.billing):
             parts.append(f"subscription {subscription.status}")
         elif subscription.source == "local credentials":
             parts.append("plan tier from local credentials (profile unavailable)")

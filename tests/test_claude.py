@@ -46,9 +46,7 @@ def test_subscription_status_reports_max_plan(home: Path) -> None:
 
 def test_subscription_status_counts_down_a_trial(home: Path) -> None:
     ends = datetime.now(tz=timezone.utc) + timedelta(days=9)
-    write_profile_cache(
-        home, claude_profile_payload(claude_code_trial_ends_at=ends.isoformat())
-    )
+    write_profile_cache(home, claude_profile_payload(claude_code_trial_ends_at=ends.isoformat()))
     sub = claude.subscription_status(home)
     assert sub is not None
     assert sub.valid_until is not None

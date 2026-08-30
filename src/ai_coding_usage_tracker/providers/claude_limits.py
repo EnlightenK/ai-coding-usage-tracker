@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 
@@ -26,6 +28,15 @@ API_BASE = "https://api.anthropic.com/api"
 PROFILE_URL = API_BASE + "/oauth/profile"
 
 WINDOW_KEYS = ("five_hour", "seven_day")
+
+# The organization uuid goes into an authenticated request path, and it reaches
+# us from an API response or - on the fallback path - from the on-disk profile
+# cache, which any local process can rewrite. Only a canonical UUID is accepted,
+# so a tampered cache cannot aim the request at another endpoint.
+_UUID_RE = re.compile(
+    r"\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z"
+)
 
 
 def session_key_file(home: Path | None = None) -> Path:
@@ -79,9 +90,7 @@ def capture_from_statusline_json(payload: dict, home: Path | None = None) -> boo
     rate_limits = payload.get("rate_limits")
     if not isinstance(rate_limits, dict):
         return False
-    return capture_windows(
-        {k: v for k, v in rate_limits.items() if isinstance(v, dict)}, home
-    )
+    return capture_windows({k: v for k, v in rate_limits.items() if isinstance(v, dict)}, home)
 
 
 def capture_windows(
@@ -106,9 +115,7 @@ def capture_windows(
     return _write_snapshot(snapshot, home)
 
 
-def refresh_from_api(
-    home: Path | None = None, timeout: float = 15.0
-) -> tuple[bool, str | None]:
+def refresh_from_api(home: Path | None = None, timeout: float = 15.0) -> tuple[bool, str | None]:
     """Refresh rate limits by calling the account-session API directly.
 
     Follows the same channel the claude.ai web/desktop apps use: the
@@ -131,7 +138,9 @@ def refresh_from_api(
     # `usage` carries the five_hour/seven_day windows; `rate_limits` answers 200
     # with concurrency tiers only, so it is tried second as a shape fallback.
     for segment in ("usage", "rate_limits"):
-        url = f"{API_BASE}/organizations/{org_uuid}/{segment}"
+        # Percent-encoded as well as shape-checked: the uuid is untrusted input
+        # spliced into a request path that carries the session key.
+        url = f"{API_BASE}/organizations/{quote(org_uuid, safe='')}/{segment}"
         try:
             response = requests.get(
                 url,
@@ -154,9 +163,7 @@ def refresh_from_api(
     return False, "account session rejected or usage shape unknown"
 
 
-def _fetch_org_uuid(
-    session_key: str, home: Path, timeout: float
-) -> tuple[str | None, str | None]:
+def _fetch_org_uuid(session_key: str, home: Path, timeout: float) -> tuple[str | None, str | None]:
     """Resolve the organization uuid, live if possible and from cache if not.
 
     The profile endpoint only accepts an OAuth token, and the Claude Code one
@@ -193,10 +200,18 @@ def _fetch_org_uuid(
 
 
 def _org_uuid(payload: object) -> str | None:
-    """Pull the organization uuid out of a profile payload."""
+    """Pull the organization uuid out of a profile payload, if it is one.
+
+    Anything that is not a canonical UUID is rejected rather than forwarded:
+    the value ends up in the path of an authenticated request, so a corrupt or
+    tampered profile cache must not be able to choose which endpoint on
+    api.anthropic.com the session key is presented to.
+    """
     org = payload.get("organization") if isinstance(payload, dict) else None
     uuid = org.get("uuid") if isinstance(org, dict) else None
-    return uuid if isinstance(uuid, str) and uuid else None
+    if not isinstance(uuid, str) or not _UUID_RE.match(uuid):
+        return None
+    return uuid
 
 
 def _cached_profile(home: Path) -> dict | None:

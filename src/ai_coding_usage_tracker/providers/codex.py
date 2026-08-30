@@ -16,6 +16,13 @@ from ..models import QuotaWindow, SubscriptionInfo, UsageRecord
 from ..parsing import parse_iso, positive_int, read_json_dict
 from .codex_app_server import CodexAppServer, CodexAppServerError
 
+# Codex usage reaches the tracker through one of two mutually-exclusive
+# channels, never both at once: account-wide daily totals from the app-server,
+# or locally parsed rollout session logs (see `iter_usage`).  The store keys
+# its de-duplication of superseded rows on these names.
+SESSION_SOURCE = "codex"
+ACCOUNT_SOURCE = "codex-account"
+
 
 @dataclass(frozen=True)
 class DeviceLogin:
@@ -178,7 +185,7 @@ def fetch_remote_usage(home: Path | None = None) -> list[UsageRecord]:
         records.append(
             UsageRecord(
                 date=day,
-                source="codex-account",
+                source=ACCOUNT_SOURCE,
                 plan_id="chatgpt-codex",
                 model="chatgpt-codex account total",
                 input_tokens=max(0, tokens),
@@ -337,7 +344,7 @@ def _parse_session(file: Path, since: date | None) -> UsageRecord | None:
         input_tokens += total - components
     return UsageRecord(
         date=day,
-        source="codex",
+        source=SESSION_SOURCE,
         plan_id=plan_for_model_provider(model_provider),
         model=model_name or "codex",
         input_tokens=input_tokens,

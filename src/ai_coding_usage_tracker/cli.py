@@ -102,7 +102,8 @@ def _cache_ttl() -> float:
         return max(0.0, float(raw))
     except ValueError:
         err_console.print(
-            f"[yellow]Invalid {CACHE_TTL_ENV}='{raw}'; using {DEFAULT_CACHE_TTL:.0f}s.[/yellow]"
+            f"[yellow]Invalid {CACHE_TTL_ENV}='{escape(raw)}'; "
+            f"using {DEFAULT_CACHE_TTL:.0f}s.[/yellow]"
         )
         return DEFAULT_CACHE_TTL
 
@@ -115,7 +116,8 @@ def _resolve_tz(name: str | None) -> timezone | ZoneInfo:
     except (ZoneInfoNotFoundError, ValueError, KeyError):
         if name:
             err_console.print(
-                f"[yellow]Unknown timezone '{name}'; falling back to system local time.[/yellow]"
+                f"[yellow]Unknown timezone '{escape(name)}'; "
+                "falling back to system local time.[/yellow]"
             )
     fallback = datetime.now().astimezone().tzinfo
     return fallback if fallback is not None else timezone.utc
@@ -338,7 +340,7 @@ def _require_plan_id(plan_id: str) -> None:
     """Exit with code 2 unless plan_id names a plan plantrack knows about."""
     if plan_id not in PLAN_LABELS:
         valid = ", ".join(PLAN_LABELS)
-        err_console.print(f"[red]Unknown plan '{plan_id}'. Valid: {valid}[/red]")
+        err_console.print(f"[red]Unknown plan '{escape(plan_id)}'. Valid: {valid}[/red]")
         raise typer.Exit(code=2)
 
 
@@ -359,17 +361,25 @@ def plan_list(
     for plan_id in PLAN_LABELS:
         sources: list[str] = []
         if plan_id in stored_keys:
+            # Discovery already reports a stored key as "plantrack config", but
+            # it skips disabled plans entirely: without this the key a disabled
+            # plan still holds would go unmentioned.
             sources.append("plantrack config")
         plan = discovered.get(plan_id)
         if plan:
             sources.extend(plan.key_sources)
+        # Deduplicate while keeping discovery's order: an enabled plan with a
+        # stored key otherwise lists "plantrack config" twice.
+        sources = list(dict.fromkeys(sources))
         if plan_id in disabled:
             state = "[red]disabled[/red]"
         elif plan or plan_id in stored_keys:
             state = "[green]tracked[/green]"
         else:
             state = "[dim]not configured[/dim]"
-        table.add_row(PLAN_LABELS[plan_id], plan_id, state, "; ".join(sources) or "-")
+        # Key sources carry user-controlled text (an MCP server name out of
+        # ~/.codex/config.toml), so they must not be read as rich markup.
+        table.add_row(PLAN_LABELS[plan_id], plan_id, state, escape("; ".join(sources)) or "-")
     console.print(table)
 
 
@@ -400,7 +410,7 @@ def plan_add(
         sanitized_host = sanitize_minimax_host(api_host, "")
         if not sanitized_host:
             err_console.print(
-                f"[red]Untrusted --api-host '{api_host}'. Only https URLs on "
+                f"[red]Untrusted --api-host '{escape(api_host)}'. Only https URLs on "
                 "minimaxi.com or minimax.io are allowed (e.g. "
                 "https://www.minimaxi.com, https://www.minimax.io).[/red]"
             )
@@ -414,14 +424,13 @@ def plan_add(
         err_console.print("[red]The API key must not be empty.[/red]")
         raise typer.Exit(code=2)
     target_home = home or paths.default_home()
+    config_path = escape(str(config.config_file(target_home)))
     if not config.set_manual_key(target_home, plan_id, api_key.strip(), api_host):
-        err_console.print(f"[red]Could not write {config.config_file(target_home)}.[/red]")
+        err_console.print(f"[red]Could not write {config_path}.[/red]")
         raise typer.Exit(code=1)
     config.set_disabled(target_home, plan_id, False)
     console.print(f"[green]{PLAN_LABELS[plan_id]} is now tracked via the stored API key.[/green]")
-    console.print(
-        f"Key saved to {config.config_file(target_home)}; protect this file like a password."
-    )
+    console.print(f"Key saved to {config_path}; protect this file like a password.")
 
 
 @plan_app.command("remove")
@@ -505,7 +514,7 @@ def scan(
             "[green]yes[/green]" if entry.found else "[dim]no[/dim]",
             _fmt_tokens(entry.size) if entry.size is not None else "-",
             _fmt_datetime(entry.modified, tz) if entry.modified is not None else "-",
-            entry.path,
+            escape(entry.path),
         )
     console.print(file_table)
     log_table = Table(title="Local usage logs")
@@ -518,7 +527,7 @@ def scan(
             entry.label,
             "[green]yes[/green]" if entry.found else "[dim]no[/dim]",
             str(entry.count) if entry.count is not None else "-",
-            entry.path,
+            escape(entry.path),
         )
     console.print(log_table)
     plan_table = Table(title="Discovered plans")
@@ -526,7 +535,8 @@ def scan(
     plan_table.add_column("Auth")
     plan_table.add_column("Key sources", overflow="fold")
     for plan in plans:
-        plan_table.add_row(plan.name, plan.auth_kind, "; ".join(plan.key_sources))
+        # Same user-controlled text as `plan list`: escape before rich sees it.
+        plan_table.add_row(plan.name, plan.auth_kind, escape("; ".join(plan.key_sources)))
     if not plans:
         console.print("[dim]No coding plans discovered on this machine.[/dim]")
     else:
@@ -534,10 +544,10 @@ def scan(
 
 
 def _fmt_sub_short(plan_type: str | None, days_left: float | None) -> str:
-    """Compact subscription cell for history rows (no rich markup in storage)."""
+    """Compact subscription cell for history rows (stored text, never markup)."""
     parts: list[str] = []
     if plan_type:
-        parts.append(plan_type)
+        parts.append(escape(plan_type))
     if days_left is not None:
         days = f"{days_left:.0f}d"
         if days_left < 0:
@@ -634,8 +644,8 @@ def codex_login(    timeout: int = typer.Option(
 
     def show_code(login: codex.DeviceLogin) -> None:
         console.print("Open this URL in a browser, then enter the device code:")
-        console.print(login.verification_url)
-        console.print(f"Device code: [bold]{login.user_code}[/bold]")
+        console.print(escape(login.verification_url))
+        console.print(f"Device code: [bold]{escape(login.user_code)}[/bold]")
         console.print("Waiting for approval…")
 
     try:
@@ -646,7 +656,7 @@ def codex_login(    timeout: int = typer.Option(
         err_console.print("[red]Codex login timed out before approval.[/red]")
         raise typer.Exit(code=1) from None
     except codex.CodexAppServerError as exc:
-        err_console.print(f"[red]Codex login failed: {exc}[/red]")
+        err_console.print(f"[red]Codex login failed: {escape(str(exc))}[/red]")
         raise typer.Exit(code=1) from None
     console.print("[green]Codex is authenticated with your ChatGPT plan.[/green]")
 
@@ -715,7 +725,9 @@ def refresh_claude(
             detail += f" [dim](billing: {escape(info.billing)})[/dim]"
         console.print(detail)
     else:
-        err_console.print(f"[yellow]Subscription profile unavailable: {profile_note}[/yellow]")
+        err_console.print(
+            f"[yellow]Subscription profile unavailable: {escape(profile_note or '')}[/yellow]"
+        )
     success, note = claude_limits.refresh_from_api(target_home)
     if success:
         console.print("[green]Refreshed Claude rate limits from claude.ai session.[/green]")
@@ -727,7 +739,7 @@ def refresh_claude(
     elif note and "no claude.ai session key" in note:
         _report_limits_without_session_key(target_home)
     else:
-        err_console.print(f"[red]Refresh failed: {note}[/red]")
+        err_console.print(f"[red]Refresh failed: {escape(note or '')}[/red]")
         raise typer.Exit(code=1)
 
 

@@ -107,9 +107,7 @@ def test_tracker_reports_stale_capture(home: Path) -> None:
     assert claude_status.quotas_source is None
 
 
-def test_refresh_reaches_a_cached_status_row(
-    home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_refresh_reaches_a_cached_status_row(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A refresh must be visible to the next `status`, not hidden by the cache.
 
     The quota windows live in a local snapshot file, so a status row cached
@@ -438,9 +436,7 @@ def test_refresh_reports_every_credential_it_tried(
     """With no cached profile either, the note must name what was attempted
     rather than blaming whichever credential happened to be tried last."""
     monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
-    monkeypatch.setattr(
-        claude_limits.requests, "get", _profile_denied_api({}, [])
-    )
+    monkeypatch.setattr(claude_limits.requests, "get", _profile_denied_api({}, []))
     success, note = REAL_REFRESH_FROM_API(home)
     assert not success
     assert "session key" in (note or "")

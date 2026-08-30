@@ -151,9 +151,7 @@ def usage_history(
     home: Path | None, days: int = 30, plan_id: str | None = None
 ) -> list[UsageRecord]:
     """Return recorded daily usage for the last `days` days, newest first."""
-    since = (
-        datetime.now(tz=timezone.utc).date() - timedelta(days=days - 1)
-    ).isoformat()
+    since = (datetime.now(tz=timezone.utc).date() - timedelta(days=days - 1)).isoformat()
     query = (
         f"SELECT date, plan_id, source, model, {', '.join(COUNTER_FIELDS)} "
         "FROM usage_days WHERE date >= ?"
@@ -195,9 +193,7 @@ def record_status(home: Path | None, statuses: list[PlanStatus]) -> None:
                     {
                         "kind": quota.kind,
                         "remaining_percent": quota.remaining_percent,
-                        "resets_at": quota.resets_at.isoformat()
-                        if quota.resets_at
-                        else None,
+                        "resets_at": quota.resets_at.isoformat() if quota.resets_at else None,
                     }
                     for quota in status.quotas
                 ]
@@ -286,9 +282,7 @@ def cached_status(
     return payload, stored_at
 
 
-def status_history(
-    home: Path | None, hours: int = 24, plan_id: str | None = None
-) -> list[dict]:
+def status_history(home: Path | None, hours: int = 24, plan_id: str | None = None) -> list[dict]:
     """Return recorded status snapshots from the last `hours`, newest first."""
     since = (datetime.now(tz=timezone.utc) - timedelta(hours=hours)).isoformat()
     query = (

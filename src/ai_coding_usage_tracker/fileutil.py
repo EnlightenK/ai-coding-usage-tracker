@@ -50,9 +50,7 @@ def secure_write_text(path: Path, content: str) -> bool:
     try:
         try:
             secure_dir(path.parent)
-            fd, tmp = tempfile.mkstemp(
-                dir=path.parent, prefix=f"{path.name}.", suffix=".tmp"
-            )
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
             try:
                 handle = os.fdopen(fd, "w", encoding="utf-8")
             except BaseException:

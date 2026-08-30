@@ -248,12 +248,8 @@ def _claude_subscription_note(
     parts: list[str] = []
     if subscription is not None:
         if subscription.valid_until is not None:
-            parts.append(
-                f"Claude Code trial ends {subscription.valid_until.date().isoformat()}"
-            )
-        if claude_profile.status_is_concerning(
-            subscription.status, subscription.billing
-        ):
+            parts.append(f"Claude Code trial ends {subscription.valid_until.date().isoformat()}")
+        if claude_profile.status_is_concerning(subscription.status, subscription.billing):
             parts.append(f"subscription {subscription.status}")
         elif subscription.source == "local credentials":
             parts.append("plan tier from local credentials (profile unavailable)")

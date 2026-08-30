@@ -90,9 +90,7 @@ def capture_from_statusline_json(payload: dict, home: Path | None = None) -> boo
     rate_limits = payload.get("rate_limits")
     if not isinstance(rate_limits, dict):
         return False
-    return capture_windows(
-        {k: v for k, v in rate_limits.items() if isinstance(v, dict)}, home
-    )
+    return capture_windows({k: v for k, v in rate_limits.items() if isinstance(v, dict)}, home)
 
 
 def capture_windows(
@@ -117,9 +115,7 @@ def capture_windows(
     return _write_snapshot(snapshot, home)
 
 
-def refresh_from_api(
-    home: Path | None = None, timeout: float = 15.0
-) -> tuple[bool, str | None]:
+def refresh_from_api(home: Path | None = None, timeout: float = 15.0) -> tuple[bool, str | None]:
     """Refresh rate limits by calling the account-session API directly.
 
     Follows the same channel the claude.ai web/desktop apps use: the
@@ -167,9 +163,7 @@ def refresh_from_api(
     return False, "account session rejected or usage shape unknown"
 
 
-def _fetch_org_uuid(
-    session_key: str, home: Path, timeout: float
-) -> tuple[str | None, str | None]:
+def _fetch_org_uuid(session_key: str, home: Path, timeout: float) -> tuple[str | None, str | None]:
     """Resolve the organization uuid, live if possible and from cache if not.
 
     The profile endpoint only accepts an OAuth token, and the Claude Code one

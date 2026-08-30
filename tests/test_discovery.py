@@ -14,9 +14,7 @@ from ai_coding_usage_tracker.discovery import (
 )
 
 
-def _write_claude_settings(
-    home: Path, filename: str, base_url: str | None = None
-) -> None:
+def _write_claude_settings(home: Path, filename: str, base_url: str | None = None) -> None:
     settings = home / ".claude" / filename
     settings.parent.mkdir(parents=True, exist_ok=True)
     env: dict[str, str] = {"ANTHROPIC_AUTH_TOKEN": "key-from-settings"}
@@ -101,14 +99,8 @@ FALLBACK = "https://fallback.example"
 
 
 def test_sanitize_maps_alias_to_canonical_host() -> None:
-    assert (
-        sanitize_minimax_host("https://api.minimaxi.com", FALLBACK)
-        == "https://www.minimaxi.com"
-    )
-    assert (
-        sanitize_minimax_host("https://api.minimax.io", FALLBACK)
-        == "https://www.minimax.io"
-    )
+    assert sanitize_minimax_host("https://api.minimaxi.com", FALLBACK) == "https://www.minimaxi.com"
+    assert sanitize_minimax_host("https://api.minimax.io", FALLBACK) == "https://www.minimax.io"
 
 
 def test_sanitize_accepts_https_minimax_domain() -> None:
@@ -187,9 +179,7 @@ def test_glm_settings_for_another_provider_is_skipped(tmp_path: Path) -> None:
     another Anthropic-compatible provider used to hand that provider's key to
     Z.ai. A declared non-Z.ai base URL now disqualifies the file instead.
     """
-    _write_claude_settings(
-        tmp_path, "settings-glm.json", "https://api.some-other-provider.example"
-    )
+    _write_claude_settings(tmp_path, "settings-glm.json", "https://api.some-other-provider.example")
     plans = {p.plan_id: p for p in discover_plans(tmp_path)}
     assert "glm-intl" not in plans
 

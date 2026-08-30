@@ -65,9 +65,7 @@ def test_dump_wraps_and_overwrites(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert json.loads(target.read_text(encoding="utf-8"))["payload"] == {"limits": [1]}
 
 
-def test_fetch_remains_dumps_raw_payload(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fetch_remains_dumps_raw_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from conftest import REAL_FETCH_REMAINS
 
     monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
@@ -87,14 +85,12 @@ def test_fetch_remains_dumps_raw_payload(
     REAL_FETCH_REMAINS("key", "https://www.minimaxi.com")
     files = list(payload_dump.dump_dir().glob("minimax-*-remains.json"))
     assert len(files) == 1
-    assert json.loads(files[0].read_text(encoding="utf-8"))["payload"]["base_resp"][
-        "status_code"
-    ] == 0
+    assert (
+        json.loads(files[0].read_text(encoding="utf-8"))["payload"]["base_resp"]["status_code"] == 0
+    )
 
 
-def test_fetch_limits_dumps_raw_payload(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fetch_limits_dumps_raw_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from conftest import REAL_FETCH_LIMITS
 
     monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))

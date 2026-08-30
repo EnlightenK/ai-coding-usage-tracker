@@ -62,9 +62,7 @@ def test_refresh_claude_reports_statusline_windows_without_a_key(
 
 
 @pytest.fixture
-def fake_env(
-    home: Path, monkeypatch: pytest.MonkeyPatch
-) -> pytest.MonkeyPatch:
+def fake_env(home: Path, monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     monkeypatch.setenv("PLANTRACK_HOME", str(home))
     monkeypatch.setenv("COLUMNS", "300")
 
@@ -81,9 +79,7 @@ def fake_env(
             ],
         )
 
-    monkeypatch.setattr(
-        "ai_coding_usage_tracker.providers.minimax.fetch_remains", fake_fetch
-    )
+    monkeypatch.setattr("ai_coding_usage_tracker.providers.minimax.fetch_remains", fake_fetch)
 
     def fake_zai(api_key: str, timeout: float = 15.0):
         from ai_coding_usage_tracker.models import QuotaWindow
@@ -97,9 +93,7 @@ def fake_env(
             ],
         )
 
-    monkeypatch.setattr(
-        "ai_coding_usage_tracker.providers.zai.fetch_limits", fake_zai
-    )
+    monkeypatch.setattr("ai_coding_usage_tracker.providers.zai.fetch_limits", fake_zai)
     return monkeypatch
 
 
@@ -145,9 +139,7 @@ def _claude_subscription_cell(home: Path) -> str:
     return _fmt_subscription(claude_status)
 
 
-def test_status_json_carries_subscription_detail(
-    fake_env: pytest.MonkeyPatch, home: Path
-) -> None:
+def test_status_json_carries_subscription_detail(fake_env: pytest.MonkeyPatch, home: Path) -> None:
     write_profile_cache(home, claude_profile_payload())
     payload = json.loads(runner.invoke(app, ["status", "--json"]).output)
     claude_plan = {p["plan_id"]: p for p in payload}["claude-code"]["subscription"]
@@ -182,13 +174,9 @@ def test_subscription_cell_flags_a_real_billing_problem(
     assert "past_due" in runner.invoke(app, ["status"]).output
 
 
-def test_subscription_cell_counts_down_a_trial(
-    fake_env: pytest.MonkeyPatch, home: Path
-) -> None:
+def test_subscription_cell_counts_down_a_trial(fake_env: pytest.MonkeyPatch, home: Path) -> None:
     ends = datetime.now(tz=timezone.utc) + timedelta(days=5)
-    write_profile_cache(
-        home, claude_profile_payload(claude_code_trial_ends_at=ends.isoformat())
-    )
+    write_profile_cache(home, claude_profile_payload(claude_code_trial_ends_at=ends.isoformat()))
     assert "5d left" in _claude_subscription_cell(home)
     assert "5d left" in runner.invoke(app, ["status"]).output
 
@@ -197,16 +185,10 @@ def test_subscription_cell_warns_when_reauth_is_due(
     fake_env: pytest.MonkeyPatch, home: Path
 ) -> None:
     """A soon-to-expire OAuth token is shown as auth state, not as billing."""
-    credentials = json.loads(
-        (home / ".claude" / ".credentials.json").read_text(encoding="utf-8")
-    )
+    credentials = json.loads((home / ".claude" / ".credentials.json").read_text(encoding="utf-8"))
     soon = datetime.now(tz=timezone.utc) + timedelta(days=3)
-    credentials["claudeAiOauth"]["refreshTokenExpiresAt"] = int(
-        soon.timestamp() * 1000
-    )
-    (home / ".claude" / ".credentials.json").write_text(
-        json.dumps(credentials), encoding="utf-8"
-    )
+    credentials["claudeAiOauth"]["refreshTokenExpiresAt"] = int(soon.timestamp() * 1000)
+    (home / ".claude" / ".credentials.json").write_text(json.dumps(credentials), encoding="utf-8")
     write_profile_cache(home, claude_profile_payload())
     cell = _claude_subscription_cell(home)
     assert "(auth 3d)" in cell
@@ -283,9 +265,7 @@ def _status_plan_ids() -> set[str]:
     return {p["plan_id"] for p in payload}
 
 
-def test_plan_disable_hides_plan_from_status(
-    fake_env: pytest.MonkeyPatch, home: Path
-) -> None:
+def test_plan_disable_hides_plan_from_status(fake_env: pytest.MonkeyPatch, home: Path) -> None:
     result = runner.invoke(app, ["plan", "disable", "minimax-intl"])
     assert result.exit_code == 0
     assert "minimax-intl" not in _status_plan_ids()
@@ -298,9 +278,7 @@ def test_plan_enable_restores_plan(fake_env: pytest.MonkeyPatch, home: Path) -> 
     assert "minimax-intl" in _status_plan_ids()
 
 
-def test_plan_remove_disables_discovered_plan(
-    fake_env: pytest.MonkeyPatch, home: Path
-) -> None:
+def test_plan_remove_disables_discovered_plan(fake_env: pytest.MonkeyPatch, home: Path) -> None:
     result = runner.invoke(app, ["plan", "remove", "minimax-intl"])
     assert result.exit_code == 0
     assert "minimax-intl" not in _status_plan_ids()
@@ -382,9 +360,7 @@ def test_plan_list_shows_states(fake_env: pytest.MonkeyPatch, home: Path) -> Non
     assert "tracked" in result.output
 
 
-def test_scan_reports_files_logs_and_plans(
-    fake_env: pytest.MonkeyPatch, home: Path
-) -> None:
+def test_scan_reports_files_logs_and_plans(fake_env: pytest.MonkeyPatch, home: Path) -> None:
     result = runner.invoke(app, ["scan"])
     assert result.exit_code == 0
     assert "Codex credentials" in result.output
@@ -450,9 +426,7 @@ def test_history_status_after_status_run(fake_env: pytest.MonkeyPatch, home: Pat
     result = runner.invoke(app, ["history", "status", "--hours", "1"])
     assert result.exit_code == 0
     assert "Claude Code" in result.output
-    payload = json.loads(
-        runner.invoke(app, ["history", "status", "--hours", "1", "--json"]).output
-    )
+    payload = json.loads(runner.invoke(app, ["history", "status", "--hours", "1", "--json"]).output)
     assert {row["plan_id"] for row in payload} == {
         "minimax-cn",
         "minimax-intl",
@@ -473,9 +447,7 @@ def test_history_rejects_unknown_plan(fake_env: pytest.MonkeyPatch, home: Path) 
     assert runner.invoke(app, ["history", "status", "--plan", "nope"]).exit_code == 2
 
 
-def test_status_ages_the_capture_at_display_time(
-    fake_env: pytest.MonkeyPatch, home: Path
-) -> None:
+def test_status_ages_the_capture_at_display_time(fake_env: pytest.MonkeyPatch, home: Path) -> None:
     """A note served from the status cache must not keep quoting a stale age."""
     from rich.console import Console
 
@@ -495,9 +467,7 @@ def test_status_ages_the_capture_at_display_time(
     # touching the status cache, exactly as a quiet statusline does.
     target = claude_limits.cache_file(home)
     snapshot = json.loads(target.read_text(encoding="utf-8"))
-    snapshot["captured_at"] = (
-        datetime.now(tz=timezone.utc) - timedelta(hours=2)
-    ).isoformat()
+    snapshot["captured_at"] = (datetime.now(tz=timezone.utc) - timedelta(hours=2)).isoformat()
     target.write_text(json.dumps(snapshot), encoding="utf-8")
 
     second = runner.invoke(app, ["status"])
@@ -582,17 +552,13 @@ def test_plan_list_keeps_the_source_of_a_disabled_plans_stored_key(
     assert result.output.count("plantrack config") == 1
 
 
-def test_status_escapes_markup_in_provider_notes(
-    fake_env: pytest.MonkeyPatch, home: Path
-) -> None:
+def test_status_escapes_markup_in_provider_notes(fake_env: pytest.MonkeyPatch, home: Path) -> None:
     """A provider-controlled note must print verbatim, not as rich markup."""
 
     def evil_fetch(api_key: str, host: str, timeout: float = 15.0) -> MiniMaxRemains:
         return MiniMaxRemains(active=None, note="quota [red]FAKE[/red] injected")
 
-    fake_env.setattr(
-        "ai_coding_usage_tracker.providers.minimax.fetch_remains", evil_fetch
-    )
+    fake_env.setattr("ai_coding_usage_tracker.providers.minimax.fetch_remains", evil_fetch)
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
     assert "FAKE" in result.output

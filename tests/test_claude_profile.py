@@ -34,9 +34,7 @@ def test_parse_profile_tolerates_garbage() -> None:
 
 
 def test_trial_end_is_parsed_as_aware_utc() -> None:
-    payload = claude_profile_payload(
-        claude_code_trial_ends_at="2026-09-01T00:00:00.000000Z"
-    )
+    payload = claude_profile_payload(claude_code_trial_ends_at="2026-09-01T00:00:00.000000Z")
     trial = claude_profile.parse_profile(payload).trial_ends_at
     assert trial is not None and trial.tzinfo is not None
 
@@ -75,9 +73,7 @@ def test_missing_cache_and_failed_fetch_report_the_reason(home: Path) -> None:
     assert note == "profile fetch disabled in tests"
 
 
-def test_fetch_prefers_the_oauth_token(
-    home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fetch_prefers_the_oauth_token(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
     class FakeResponse:

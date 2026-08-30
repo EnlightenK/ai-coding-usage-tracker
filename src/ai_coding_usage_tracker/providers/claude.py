@@ -74,9 +74,7 @@ def subscription_state(
         return None, None
     now = datetime.now(tz=timezone.utc)
     auth_valid_until = ms_to_datetime(oauth.get("refreshTokenExpiresAt"))
-    auth_days_left = (
-        (auth_valid_until - now).total_seconds() / 86400 if auth_valid_until else None
-    )
+    auth_days_left = (auth_valid_until - now).total_seconds() / 86400 if auth_valid_until else None
     local_plan = oauth.get("subscriptionType")
 
     payload, note = _profile.load_profile(home)
@@ -87,8 +85,7 @@ def subscription_state(
     days_left = (valid_until - now).total_seconds() / 86400 if valid_until else None
     return (
         SubscriptionInfo(
-            plan_type=profile.plan_type
-            or (local_plan if isinstance(local_plan, str) else None),
+            plan_type=profile.plan_type or (local_plan if isinstance(local_plan, str) else None),
             valid_until=valid_until,
             days_left=days_left,
             email=profile.email,
@@ -113,9 +110,7 @@ def iter_usage(home: Path | None = None, since: date | None = None) -> Iterator[
         yield from _parse_transcript(file, since, seen_ids)
 
 
-def _parse_transcript(
-    file: Path, since: date | None, seen_ids: set[str]
-) -> Iterator[UsageRecord]:
+def _parse_transcript(file: Path, since: date | None, seen_ids: set[str]) -> Iterator[UsageRecord]:
     # Streamed line by line: transcripts can be large, and reading them whole
     # would hold the entire file in memory at once.
     try:

@@ -60,9 +60,7 @@ def test_parse_unknown_error_is_not_active() -> None:
 
 
 def test_parse_empty_list() -> None:
-    result = minimax.parse_remains(
-        {"model_remains": [], "base_resp": {"status_code": 0}}
-    )
+    result = minimax.parse_remains({"model_remains": [], "base_resp": {"status_code": 0}})
     assert result.active is None
 
 
@@ -84,9 +82,7 @@ def test_fetch_success(monkeypatch: pytest.MonkeyPatch) -> None:
         def json(self) -> dict:
             return SUCCESS_PAYLOAD
 
-    monkeypatch.setattr(
-        minimax.requests, "get", lambda *a, **k: FakeResponse()
-    )
+    monkeypatch.setattr(minimax.requests, "get", lambda *a, **k: FakeResponse())
     result = REAL_FETCH_REMAINS("key", "https://www.minimaxi.com")
     assert result.active is True
     assert len(result.quotas) == 2

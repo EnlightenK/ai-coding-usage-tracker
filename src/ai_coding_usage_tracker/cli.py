@@ -581,9 +581,7 @@ def history_usage(
 
 @history_app.command("status")
 def history_status(
-    hours: int = typer.Option(
-        24, "--hours", min=1, help="How many hours of snapshots to show."
-    ),
+    hours: int = typer.Option(24, "--hours", min=1, help="How many hours of snapshots to show."),
     plan: str | None = typer.Option(None, "--plan", "-p", help="Filter by plan id."),
     json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON."),
     home: Path | None = typer.Option(None, help="Home directory to scan."),
@@ -635,7 +633,8 @@ def history_status(
 
 
 @app.command("codex-login")
-def codex_login(    timeout: int = typer.Option(
+def codex_login(
+    timeout: int = typer.Option(
         600, "--timeout", min=1, help="Seconds to wait for browser device login (default: 600)."
     ),
     home: Path | None = typer.Option(None, help="Home directory for Codex credentials."),

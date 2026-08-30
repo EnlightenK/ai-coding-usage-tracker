@@ -239,9 +239,7 @@ def discover_plans(home: Path | None = None) -> list[DiscoveredPlan]:
         # GLM's quota API lives at a fixed Z.ai URL, so the base URL declared in
         # the settings file cannot redirect the request - it can only tell us
         # the token in that file is not a Z.ai one, in which case we skip it.
-        _find_claude_settings_key(
-            home, "settings-glm.json", glm, trusted_base_url=is_zai_base_url
-        )
+        _find_claude_settings_key(home, "settings-glm.json", glm, trusted_base_url=is_zai_base_url)
 
     claude_plan = ensure("claude-code", "oauth")
     credentials = read_json_dict(paths.claude_dir(home) / ".credentials.json")

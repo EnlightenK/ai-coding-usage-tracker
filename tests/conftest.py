@@ -29,16 +29,12 @@ def write_json(path: Path, payload: object) -> None:
 
 def write_lines(path: Path, entries: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8"
-    )
+    path.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
 
 
 def fake_jwt(claims: dict) -> str:
     header = base64.urlsafe_b64encode(b'{"alg":"RS256"}').rstrip(b"=").decode()
-    payload = base64.urlsafe_b64encode(
-        json.dumps(claims).encode()
-    ).rstrip(b"=").decode()
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
     return f"{header}.{payload}.signature"
 
 
@@ -97,6 +93,7 @@ def isolated_plantrack_home(
 @pytest.fixture(autouse=True)
 def no_real_codex_app_server(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep fixture homes hermetic; focused app-server tests opt in explicitly."""
+
     def unavailable(*_: object, **__: object) -> object:
         raise CodexAppServerUnavailable("mocked Codex app-server unavailable")
 
@@ -144,6 +141,7 @@ def no_real_claude_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     Tests that need profile data write a cache file into the fixture home,
     which exercises the parsing path without any patching.
     """
+
     def offline(*_: object, **__: object) -> tuple[None, str]:
         return None, "profile fetch disabled in tests"
 
@@ -161,9 +159,8 @@ def no_real_claude_limits_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     branch on that note. Tests that drive the real refresh through a fake
     transport restore it via REAL_REFRESH_FROM_API.
     """
-    def offline(
-        home: Path | None = None, timeout: float = 15.0
-    ) -> tuple[bool, str | None]:
+
+    def offline(home: Path | None = None, timeout: float = 15.0) -> tuple[bool, str | None]:
         if not claude_limits.load_session_key(home):
             return False, "no claude.ai session key configured"
         return False, "rate limit refresh disabled in tests"
@@ -171,9 +168,7 @@ def no_real_claude_limits_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_limits, "refresh_from_api", offline)
 
 
-def write_profile_cache(
-    home: Path, profile: dict, fetched_at: datetime | None = None
-) -> None:
+def write_profile_cache(home: Path, profile: dict, fetched_at: datetime | None = None) -> None:
     """Seed the Claude account profile cache inside a fixture home."""
     stamp = fetched_at or datetime.now(tz=timezone.utc)
     write_json(
@@ -253,7 +248,7 @@ def home(tmp_path: Path) -> Path:
         'model = "gpt-5.6-sol"\n'
         "[mcp_servers.MiniMax]\n"
         'command = "uvx"\n'
-        "args = [\"minimax-coding-plan-mcp\"]\n"
+        'args = ["minimax-coding-plan-mcp"]\n'
         "\n"
         "[mcp_servers.MiniMax.env]\n"
         'MINIMAX_API_KEY = "mm-intl-key"\n'
@@ -364,18 +359,18 @@ def home(tmp_path: Path) -> Path:
         },
     ]
     write_lines(
-        tmp_path
-        / ".codex"
-        / "sessions"
-        / "2026"
-        / "08"
-        / "15"
-        / "rollout-demo.jsonl",
+        tmp_path / ".codex" / "sessions" / "2026" / "08" / "15" / "rollout-demo.jsonl",
         codex_session,
     )
 
     write_json(
-        tmp_path / ".local" / "share" / "opencode" / "storage" / "message" / "ses_1"
+        tmp_path
+        / ".local"
+        / "share"
+        / "opencode"
+        / "storage"
+        / "message"
+        / "ses_1"
         / "msg_zai.json",
         {
             "id": "msg_zai",
@@ -385,7 +380,13 @@ def home(tmp_path: Path) -> Path:
         },
     )
     write_json(
-        tmp_path / ".local" / "share" / "opencode" / "storage" / "message" / "ses_1"
+        tmp_path
+        / ".local"
+        / "share"
+        / "opencode"
+        / "storage"
+        / "message"
+        / "ses_1"
         / "msg_other.json",
         {
             "id": "msg_other",
@@ -394,9 +395,7 @@ def home(tmp_path: Path) -> Path:
             "model": {"providerID": "nvidia", "modelID": "llama"},
         },
     )
-    part_dir = (
-        tmp_path / ".local" / "share" / "opencode" / "storage" / "part" / "msg_zai"
-    )
+    part_dir = tmp_path / ".local" / "share" / "opencode" / "storage" / "part" / "msg_zai"
     write_json(
         part_dir / "part_1.json",
         {

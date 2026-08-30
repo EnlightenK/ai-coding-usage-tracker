@@ -210,9 +210,7 @@ def login_with_device_code(
     home = home or paths.default_home()
     codex_home = paths.codex_dir(home)
     codex_home.mkdir(parents=True, exist_ok=True)
-    with CodexAppServer(
-        codex_home=codex_home, timeout=min(timeout, 30.0)
-    ) as server:
+    with CodexAppServer(codex_home=codex_home, timeout=min(timeout, 30.0)) as server:
         result = server.request("account/login/start", {"type": "chatgptDeviceCode"})
         verification_url = result.get("verificationUrl")
         user_code = result.get("userCode")
@@ -224,8 +222,10 @@ def login_with_device_code(
         completed = server.wait_for_notification(
             "account/login/completed",
             timeout=timeout,
-            predicate=lambda message: isinstance(message.get("params"), dict)
-            and message["params"].get("loginId") == login_id,
+            predicate=lambda message: (
+                isinstance(message.get("params"), dict)
+                and message["params"].get("loginId") == login_id
+            ),
         )
     params = completed.get("params")
     if not isinstance(params, dict) or params.get("success") is not True:
@@ -309,9 +309,7 @@ def _parse_session(file: Path, since: date | None) -> UsageRecord | None:
                     continue
                 if payload.get("type") == "token_count":
                     info = payload.get("info")
-                    if isinstance(info, dict) and isinstance(
-                        info.get("total_token_usage"), dict
-                    ):
+                    if isinstance(info, dict) and isinstance(info.get("total_token_usage"), dict):
                         total_usage = info["total_token_usage"]
                         token_events += 1
                 elif entry.get("type") == "session_meta":
@@ -333,11 +331,7 @@ def _parse_session(file: Path, since: date | None) -> UsageRecord | None:
     cache_read_tokens = positive_int(total_usage.get("cached_input_tokens"))
     cache_write_tokens = positive_int(total_usage.get("cache_write_input_tokens"))
     components = (
-        input_tokens
-        + output_tokens
-        + reasoning_tokens
-        + cache_read_tokens
-        + cache_write_tokens
+        input_tokens + output_tokens + reasoning_tokens + cache_read_tokens + cache_write_tokens
     )
     total = positive_int(total_usage.get("total_tokens"))
     if total > components:

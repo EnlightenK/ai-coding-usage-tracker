@@ -105,12 +105,18 @@ def quotas_from_rate_limits(payload: dict[str, Any]) -> list[QuotaWindow]:
     """Convert the stable app-server rate-limit response into tracker windows."""
     buckets = payload.get("rateLimitsByLimitId")
     entries: list[tuple[str | None, dict[str, Any]]] = []
+    # ``rateLimits`` is the canonical meter Codex presents to the user.  The
+    # per-limit map also contains that same meter plus auxiliary model meters;
+    # put the canonical one first so its 5h/weekly labels remain the values
+    # shown in the status table.
+    canonical = payload.get("rateLimits")
+    canonical_limit_id = canonical.get("limitId") if isinstance(canonical, dict) else None
+    if isinstance(canonical, dict):
+        entries.append((None, canonical))
     if isinstance(buckets, dict):
         for limit_id, value in buckets.items():
-            if isinstance(value, dict):
+            if isinstance(value, dict) and value.get("limitId") != canonical_limit_id:
                 entries.append((str(limit_id), value))
-    if not entries and isinstance(payload.get("rateLimits"), dict):
-        entries.append((None, payload["rateLimits"]))
 
     quotas: list[QuotaWindow] = []
     used_kinds: set[str] = set()

@@ -178,6 +178,35 @@ def test_rate_limit_mapping_supports_standard_and_arbitrary_windows() -> None:
     assert by_kind["5h"].resets_at == datetime.fromtimestamp(1_700_000_000, tz=timezone.utc)
 
 
+def test_rate_limit_mapping_prioritizes_the_codex_ui_meter() -> None:
+    quotas = codex.quotas_from_rate_limits(
+        {
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {"usedPercent": 85, "windowDurationMins": 300, "resetsAt": 100},
+                "secondary": {"usedPercent": 35, "windowDurationMins": 10080, "resetsAt": 200},
+            },
+            "rateLimitsByLimitId": {
+                "base_model_inference": {
+                    "limitId": "base_model_inference",
+                    "limitName": "gpt-reserve",
+                    "primary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": 300},
+                },
+                "codex": {
+                    "limitId": "codex",
+                    "primary": {"usedPercent": 85, "windowDurationMins": 300, "resetsAt": 100},
+                    "secondary": {"usedPercent": 35, "windowDurationMins": 10080, "resetsAt": 200},
+                },
+            },
+        }
+    )
+
+    by_kind = {quota.kind: quota for quota in quotas}
+    assert by_kind["5h"].remaining_percent == 15
+    assert by_kind["weekly"].remaining_percent == 65
+    assert by_kind["gpt-reserve weekly"].remaining_percent == 100
+
+
 def test_status_uses_live_codex_quotas(home: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         codex,

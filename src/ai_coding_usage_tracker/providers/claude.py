@@ -20,6 +20,7 @@ def cached_quotas(home: Path | None = None) -> list[QuotaWindow]:
     if snapshot is None:
         return []
     quotas: list[QuotaWindow] = []
+    now = datetime.now(tz=timezone.utc)
     mapping = {"five_hour": "5h", "seven_day": "weekly"}
     for source_kind, kind in mapping.items():
         window = snapshot.get(source_kind)
@@ -35,6 +36,13 @@ def cached_quotas(home: Path | None = None) -> list[QuotaWindow]:
                 # Hostile or absurd epoch values must not crash the whole run.
                 resets = None
         remaining = 100.0 - used if isinstance(used, (int, float)) else None
+        # A percentage captured before the window reset describes a window that
+        # no longer exists. The freshness limit is 6h and the short window is
+        # 5h, so a snapshot can outlive a whole cycle: serving it reports near
+        # exhaustion to someone who actually has a full window. The reset time
+        # survives, the stale number does not.
+        if remaining is not None and resets is not None and resets <= now:
+            remaining = None
         quotas.append(QuotaWindow(kind=kind, remaining_percent=remaining, resets_at=resets))
     return quotas
 

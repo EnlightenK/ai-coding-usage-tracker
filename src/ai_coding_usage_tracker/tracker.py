@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import paths, store
 from .discovery import DiscoveredPlan, discover_plans
-from .models import PlanStatus, QuotaWindow, SubscriptionInfo
+from .models import PlanStatus, QuotaWindow, SubscriptionInfo, has_usable_quota
 from .parsing import age_text, parse_iso
 from .providers import claude, claude_limits, claude_profile, codex, minimax, zai
 
@@ -187,7 +187,7 @@ def _status_for_plan(plan: DiscoveredPlan, home: Path) -> PlanStatus:
         subscription, subscription_note = claude.subscription_state(home)
         quotas = claude.cached_quotas(home)
         note = None
-        if not quotas and claude_limits.load_session_key(home):
+        if not has_usable_quota(quotas) and claude_limits.load_session_key(home):
             success, refresh_note = claude_limits.refresh_from_api(home)
             if success:
                 quotas = claude.cached_quotas(home)

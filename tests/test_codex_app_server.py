@@ -178,6 +178,35 @@ def test_rate_limit_mapping_supports_standard_and_arbitrary_windows() -> None:
     assert by_kind["5h"].resets_at == datetime.fromtimestamp(1_700_000_000, tz=timezone.utc)
 
 
+def test_rate_limit_mapping_prioritizes_the_codex_ui_meter() -> None:
+    quotas = codex.quotas_from_rate_limits(
+        {
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {"usedPercent": 85, "windowDurationMins": 300, "resetsAt": 100},
+                "secondary": {"usedPercent": 35, "windowDurationMins": 10080, "resetsAt": 200},
+            },
+            "rateLimitsByLimitId": {
+                "base_model_inference": {
+                    "limitId": "base_model_inference",
+                    "limitName": "gpt-reserve",
+                    "primary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": 300},
+                },
+                "codex": {
+                    "limitId": "codex",
+                    "primary": {"usedPercent": 85, "windowDurationMins": 300, "resetsAt": 100},
+                    "secondary": {"usedPercent": 35, "windowDurationMins": 10080, "resetsAt": 200},
+                },
+            },
+        }
+    )
+
+    by_kind = {quota.kind: quota for quota in quotas}
+    assert by_kind["5h"].remaining_percent == 15
+    assert by_kind["weekly"].remaining_percent == 65
+    assert by_kind["gpt-reserve weekly"].remaining_percent == 100
+
+
 def test_status_uses_live_codex_quotas(home: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         codex,
@@ -234,3 +263,38 @@ def test_remote_bucket_parser_uses_total_as_input_tokens(monkeypatch, home: Path
     assert records[0].input_tokens == 456
     assert records[0].output_tokens == 0
     assert records[0].requests == 0
+
+
+def test_buckets_without_a_limit_id_are_not_dropped() -> None:
+    """De-duplicating against a missing canonical id dropped every bucket.
+
+    With no `rateLimits` key the canonical id is None, so a bucket that also
+    carries no `limitId` compared None != None and was skipped - leaving an
+    account with meters reporting none at all.
+    """
+    quotas = codex.quotas_from_rate_limits(
+        {
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "primary": {
+                        "usedPercent": 25,
+                        "windowDurationMins": 300,
+                        "resetsAt": None,
+                    }
+                }
+            }
+        }
+    )
+    assert [(q.kind, q.remaining_percent) for q in quotas] == [("5h", 75.0)]
+
+
+def test_the_canonical_meter_is_still_de_duplicated() -> None:
+    """The guard must not reintroduce the duplicate it was added to remove."""
+    bucket = {
+        "limitId": "shared",
+        "primary": {"usedPercent": 10, "windowDurationMins": 300, "resetsAt": None},
+    }
+    quotas = codex.quotas_from_rate_limits(
+        {"rateLimits": bucket, "rateLimitsByLimitId": {"shared": bucket}}
+    )
+    assert [q.kind for q in quotas] == ["5h"]

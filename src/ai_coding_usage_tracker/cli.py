@@ -22,7 +22,7 @@ from .discovery import (
     discover_plans,
     sanitize_minimax_host,
 )
-from .models import PlanStatus, UsageRecord
+from .models import PlanStatus, UsageRecord, has_usable_quota
 from .parsing import age_text
 from .providers import claude, claude_limits, claude_profile, codex
 from .scan import collect_scan
@@ -179,7 +179,7 @@ def _fmt_note(status: PlanStatus) -> str:
     captured = status.quotas_captured_at
     if captured is not None:
         age = age_text(datetime.now(tz=timezone.utc) - captured)
-        if status.quotas:
+        if has_usable_quota(status.quotas):
             source = status.quotas_source or claude_limits.SOURCE_STATUSLINE
             parts.append(f"rate limits as of {age} ago ({source})")
         else:

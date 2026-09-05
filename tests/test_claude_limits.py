@@ -5,13 +5,29 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from conftest import REAL_REFRESH_FROM_API, claude_profile_payload, write_profile_cache
 
 from ai_coding_usage_tracker.providers import claude, claude_limits
+
+
+def _future_ts(hours: float) -> int:
+    """A reset epoch in the future, relative to now.
+
+    Hardcoded reset dates silently drift into the past as a fixture ages, at
+    which point the window reads as already reset and its percentage is
+    correctly dropped - so the test starts asserting the wrong thing.
+    """
+    return int((datetime.now(timezone.utc) + timedelta(hours=hours)).timestamp())
+
+
+def _future_iso(hours: float) -> str:
+    """A reset time in the future as an ISO string (see `_future_ts`)."""
+    return (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+
 
 # Real organization uuids are canonical UUIDs, and only those are accepted:
 # the value is spliced into an authenticated request path.
@@ -272,20 +288,23 @@ def test_refresh_success_via_api(home: Path, monkeypatch: pytest.MonkeyPatch) ->
             return self._payload
 
     def fake_get(url: str, headers: dict, timeout: float) -> FakeResponse:
-        assert headers["Authorization"] == "Bearer sk-ant-sid01-test"
         if url.endswith("/oauth/profile"):
+            # The profile endpoint takes the OAuth token; a session key is
+            # refused there with 403 account_session_invalid.
+            assert headers["Authorization"] == "Bearer x"
             return FakeResponse(
                 200,
                 {"organization": {"uuid": ORG_UUID}},
             )
+        assert headers["Authorization"] == "Bearer sk-ant-sid01-test"
         if url.endswith("/usage"):
             return FakeResponse(404, {})
         if url.endswith("/rate_limits"):
             return FakeResponse(
                 200,
                 {
-                    "five_hour": {"used_percentage": 40.0, "resets_at": 1786870200},
-                    "seven_day": {"used_percentage": 20.0, "resets_at": 1786881600},
+                    "five_hour": {"used_percentage": 40.0, "resets_at": _future_ts(2)},
+                    "seven_day": {"used_percentage": 20.0, "resets_at": _future_ts(48)},
                 },
             )
         raise AssertionError(f"unexpected url: {url}")
@@ -430,17 +449,21 @@ def test_refresh_uses_the_cached_org_uuid_when_the_profile_is_denied(
     assert quotas["5h"] == 56.0
 
 
-def test_refresh_reports_every_credential_it_tried(
+def test_refresh_reports_the_credential_it_tried(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With no cached profile either, the note must name what was attempted
-    rather than blaming whichever credential happened to be tried last."""
+    """With no cached profile either, the note must name what was attempted.
+
+    Only the OAuth token is named: the session key is never sent to the
+    profile endpoint, so reporting it as rejected would blame a working
+    cookie for the wrong endpoint's refusal.
+    """
     monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
     monkeypatch.setattr(claude_limits.requests, "get", _profile_denied_api({}, []))
     success, note = REAL_REFRESH_FROM_API(home)
     assert not success
-    assert "session key" in (note or "")
     assert "claude code oauth" in (note or "")
+    assert "session key" not in (note or "")
     assert "no cached profile" in (note or "")
 
 
@@ -457,12 +480,12 @@ def test_refresh_parses_the_account_usage_shape(
             {
                 "five_hour": {
                     "utilization": 32.0,
-                    "resets_at": "2026-08-20T18:29:59.742869+00:00",
+                    "resets_at": _future_iso(2),
                     "limit_dollars": None,
                 },
                 "seven_day": {
                     "utilization": 36.0,
-                    "resets_at": "2026-08-23T11:59:59.742893+00:00",
+                    "resets_at": _future_iso(48),
                     "limit_dollars": None,
                 },
                 "seven_day_opus": None,
@@ -532,6 +555,323 @@ def test_captured_source_defaults_for_pre_field_snapshots(home: Path) -> None:
     del snapshot["source"]
     target.write_text(json.dumps(snapshot), encoding="utf-8")
     assert claude_limits.captured_source(home) == claude_limits.SOURCE_STATUSLINE
+
+
+def test_refresh_reports_a_failed_cache_write(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A refresh that cannot persist its snapshot has not refreshed anything.
+
+    Reporting success here left `status` showing the previous windows with no
+    note explaining why the numbers never moved.
+    """
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    monkeypatch.setattr(
+        claude_limits.requests,
+        "get",
+        _fake_usage_api({"five_hour": {"utilization": 30.0}}),
+    )
+    # Patched here rather than on the shared `fileutil` module, so the test
+    # disables only the write it is about.
+    monkeypatch.setattr(claude_limits, "_write_snapshot", lambda *_, **__: False)
+    success, note = REAL_REFRESH_FROM_API(home)
+    assert not success
+    assert "could not write" in (note or "")
+
+
+def test_refresh_survives_a_network_error_on_the_first_credential(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One flaky profile lookup must not skip the cached org uuid.
+
+    The cached profile exists precisely for degraded conditions, so aborting
+    the whole resolution on the first RequestException threw away the fallback
+    that would have worked.
+    """
+    write_profile_cache(home, claude_profile_payload(uuid=CACHED_ORG_UUID))
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    seen: list[str] = []
+
+    def fake_get(url: str, headers: dict, timeout: float) -> _FakeResponse:
+        seen.append(url)
+        if url.endswith("/oauth/profile"):
+            raise claude_limits.requests.RequestException("connection reset")
+        if url.endswith("/usage"):
+            return _FakeResponse(200, {"five_hour": {"utilization": 25.0}})
+        if url.endswith("/rate_limits"):
+            return _FakeResponse(200, {"rate_limit_tier": "default_claude_ai"})
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(claude_limits.requests, "get", fake_get)
+    success, note = REAL_REFRESH_FROM_API(home)
+    assert success, note
+    assert any(f"{CACHED_ORG_UUID}/usage" in url for url in seen)
+    quotas = {q.kind: q.remaining_percent for q in claude.cached_quotas(home)}
+    assert quotas["5h"] == 75.0
+
+
+def test_refresh_network_error_note_names_the_credentials_and_the_cause(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no cached profile, the note must survive the fallthrough intact."""
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+
+    def fake_get(url: str, headers: dict, timeout: float) -> _FakeResponse:
+        raise claude_limits.requests.RequestException("connection reset")
+
+    monkeypatch.setattr(claude_limits.requests, "get", fake_get)
+    success, note = REAL_REFRESH_FROM_API(home)
+    assert not success
+    assert "claude code oauth" in (note or "")
+    assert "connection reset" in (note or "")
+    assert "no cached profile" in (note or "")
+
+
+def test_account_level_windows_outrank_a_nested_namesake(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A per-model `five_hour` must never become the account's headline number.
+
+    The old lookup grabbed the first match from a depth-first walk, so a
+    breakdown section nested before the real windows would win silently.
+    """
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    monkeypatch.setattr(
+        claude_limits.requests,
+        "get",
+        _fake_usage_api(
+            {
+                # Sorts first, and nests a same-named window one level down.
+                "breakdown_by_model": {
+                    "opus": {"five_hour": {"utilization": 99.0}},
+                },
+                "five_hour": {"utilization": 10.0},
+                "seven_day": {"utilization": 20.0},
+            }
+        ),
+    )
+    success, note = REAL_REFRESH_FROM_API(home)
+    assert success, note
+    quotas = {q.kind: q.remaining_percent for q in claude.cached_quotas(home)}
+    assert quotas["5h"] == 90.0
+    assert quotas["weekly"] == 80.0
+
+
+def test_windows_are_found_in_a_top_level_list_payload() -> None:
+    """A list root must still be walked: the previous lookup accepted one."""
+    found = claude_limits._find_windows([{"five_hour": {"utilization": 12.0}}])
+    assert found["five_hour"]["utilization"] == 12.0
+
+
+def test_find_windows_ignores_a_scalar_payload() -> None:
+    assert claude_limits._find_windows("nonsense") == {}
+    assert claude_limits._find_windows(None) == {}
+
+
+def _capture_with_reset(
+    home: Path,
+    used: float,
+    resets_in_hours: float,
+    source: str = claude_limits.SOURCE_STATUSLINE,
+) -> None:
+    """Write a fresh snapshot whose 5h window resets at the given offset."""
+    claude_limits.capture_windows(
+        {"five_hour": {"used_percentage": used, "resets_at": _future_ts(resets_in_hours)}},
+        home,
+        source=source,
+    )
+
+
+def test_elapsed_window_drops_its_stale_percentage(home: Path) -> None:
+    """A percentage from before the reset describes a window that is gone.
+
+    The freshness limit is 6h and the short window is 5h, so a snapshot can
+    outlive a whole cycle. Serving the old number told a user with a full
+    window that they were nearly exhausted.
+    """
+    _capture_with_reset(home, used=89.0, resets_in_hours=-3.5)
+    quotas = {q.kind: q for q in claude.cached_quotas(home)}
+    assert claude_limits.load_cached(home) is not None, "snapshot must still be fresh"
+    assert quotas["5h"].remaining_percent is None
+    # The reset time survives, so the row can still say the window is resetting.
+    assert quotas["5h"].resets_at is not None
+
+
+def test_unelapsed_window_keeps_its_percentage(home: Path) -> None:
+    _capture_with_reset(home, used=89.0, resets_in_hours=2)
+    quotas = {q.kind: q for q in claude.cached_quotas(home)}
+    assert quotas["5h"].remaining_percent == 11.0
+
+
+def test_window_without_a_reset_time_keeps_its_percentage(home: Path) -> None:
+    """No reset time means nothing is known to have elapsed."""
+    claude_limits.capture_windows({"five_hour": {"used_percentage": 89.0}}, home)
+    quotas = {q.kind: q for q in claude.cached_quotas(home)}
+    assert quotas["5h"].remaining_percent == 11.0
+
+
+def test_elapsed_window_triggers_the_session_refresh(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An elapsed window is missing data, so the refresh must still fire.
+
+    The trigger used to be `not quotas`, which a stale-but-present window
+    satisfied - so the one case the session key exists for never refreshed.
+    """
+    from ai_coding_usage_tracker.tracker import collect_statuses
+
+    _capture_with_reset(home, used=89.0, resets_in_hours=-3.5)
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    # tracker calls the module attribute, which the autouse guard replaces, so
+    # the real refresh is restored here - the fake transport below is what
+    # keeps it off the network.
+    monkeypatch.setattr(claude_limits, "refresh_from_api", REAL_REFRESH_FROM_API)
+    monkeypatch.setattr(
+        claude_limits.requests,
+        "get",
+        _fake_usage_api({"five_hour": {"utilization": 4.0, "resets_at": _future_iso(4)}}),
+    )
+    status = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    quotas = {q.kind: q for q in status.quotas}
+    assert quotas["5h"].remaining_percent == 96.0
+    assert status.quotas_source == claude_limits.SOURCE_ACCOUNT_SESSION
+
+
+def test_elapsed_window_keeps_reporting_who_wrote_the_snapshot(home: Path) -> None:
+    """`quotas_source` is provenance, not a usability flag.
+
+    Suppressing it for an elapsed window made `_fmt_note` fall back to
+    SOURCE_STATUSLINE, so a snapshot the account session had written was
+    reported as a statusline capture - the exact inference the recorded label
+    exists to prevent.
+    """
+    from ai_coding_usage_tracker.tracker import collect_statuses
+
+    _capture_with_reset(
+        home, used=89.0, resets_in_hours=-3.5, source=claude_limits.SOURCE_ACCOUNT_SESSION
+    )
+    status = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    assert status.quotas_source == claude_limits.SOURCE_ACCOUNT_SESSION
+
+
+def test_cached_and_fresh_paths_agree_on_an_elapsed_window(home: Path) -> None:
+    """The overlay used a different predicate from the fresh path, so the same
+    snapshot reported a different source depending on cache state."""
+    from ai_coding_usage_tracker.tracker import collect_statuses
+
+    _capture_with_reset(
+        home, used=89.0, resets_in_hours=-3.5, source=claude_limits.SOURCE_ACCOUNT_SESSION
+    )
+    fresh = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    # Well inside the cache TTL, so this row comes back through the overlay.
+    cached = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    assert "cached" in (cached.note or "")
+    assert cached.quotas_source == fresh.quotas_source
+    assert cached.quotas_source == claude_limits.SOURCE_ACCOUNT_SESSION
+
+
+def test_elapsed_window_note_does_not_claim_a_usable_capture(home: Path) -> None:
+    """An elapsed window stays in the list with no percentage, which made the
+    note branch on a truthy list and claim rate limits it could not show."""
+    from ai_coding_usage_tracker.cli import _fmt_note
+    from ai_coding_usage_tracker.tracker import collect_statuses
+
+    _capture_with_reset(
+        home, used=89.0, resets_in_hours=-3.5, source=claude_limits.SOURCE_ACCOUNT_SESSION
+    )
+    status = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    note = _fmt_note(status)
+    assert "stale capture" in note
+    assert "rate limits as of" not in note
+
+
+def test_usable_window_note_names_the_real_source(home: Path) -> None:
+    _capture_with_reset(
+        home, used=40.0, resets_in_hours=2, source=claude_limits.SOURCE_ACCOUNT_SESSION
+    )
+    from ai_coding_usage_tracker.cli import _fmt_note
+    from ai_coding_usage_tracker.tracker import collect_statuses
+
+    status = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    note = _fmt_note(status)
+    assert claude_limits.SOURCE_ACCOUNT_SESSION in note
+    assert "stale capture" not in note
+
+
+def test_the_session_key_is_never_sent_to_the_profile_endpoint(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verified against the live endpoint: a session key there is answered
+    with 403 account_session_invalid, so sending one buys a wasted round trip
+    and a note blaming the cookie for the wrong endpoint's refusal."""
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    profile_auth: list[str] = []
+
+    def fake_get(url: str, headers: dict, timeout: float) -> _FakeResponse:
+        if url.endswith("/oauth/profile"):
+            profile_auth.append(headers["Authorization"])
+            return _FakeResponse(200, {"organization": {"uuid": ORG_UUID}})
+        if url.endswith("/usage"):
+            return _FakeResponse(200, {"five_hour": {"utilization": 5.0}})
+        return _FakeResponse(200, {"rate_limit_tier": "default_claude_ai"})
+
+    monkeypatch.setattr(claude_limits.requests, "get", fake_get)
+    assert REAL_REFRESH_FROM_API(home)[0]
+    assert profile_auth == ["Bearer x"]
+
+
+def test_a_network_error_on_usage_still_tries_rate_limits(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One failed segment must not decide the whole refresh, and the cause
+    has to survive into the note."""
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    seen: list[str] = []
+
+    def fake_get(url: str, headers: dict, timeout: float) -> _FakeResponse:
+        seen.append(url)
+        if url.endswith("/oauth/profile"):
+            return _FakeResponse(200, {"organization": {"uuid": ORG_UUID}})
+        if url.endswith("/usage"):
+            raise claude_limits.requests.RequestException("connection reset")
+        return _FakeResponse(200, {"five_hour": {"used_percentage": 8.0}})
+
+    monkeypatch.setattr(claude_limits.requests, "get", fake_get)
+    success, note = REAL_REFRESH_FROM_API(home)
+    assert success, note
+    assert any(url.endswith("/rate_limits") for url in seen)
+    assert {q.kind: q.remaining_percent for q in claude.cached_quotas(home)}["5h"] == 92.0
+
+
+def test_a_network_error_on_every_segment_reports_the_cause(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+
+    def fake_get(url: str, headers: dict, timeout: float) -> _FakeResponse:
+        if url.endswith("/oauth/profile"):
+            return _FakeResponse(200, {"organization": {"uuid": ORG_UUID}})
+        raise claude_limits.requests.RequestException("connection reset")
+
+    monkeypatch.setattr(claude_limits.requests, "get", fake_get)
+    success, note = REAL_REFRESH_FROM_API(home)
+    assert not success
+    assert "connection reset" in (note or "")
+
+
+def test_window_containers_offers_each_container_once() -> None:
+    """The root and `data` were pre-yielded and then re-walked by the queue."""
+    payload = {"data": {"five_hour": {"utilization": 1.0}}, "other": [{"x": 1}]}
+    seen = list(claude_limits._window_containers(payload))
+    assert sum(1 for c in seen if c is payload) == 1
+    assert sum(1 for c in seen if c is payload["data"]) == 1
+
+
+def test_window_containers_still_prefers_shallower_namesakes() -> None:
+    """Switching to a deque must keep the breadth-first ordering intact."""
+    payload = {
+        "deep": {"deeper": {"five_hour": {"utilization": 99.0}}},
+        "shallow": {"five_hour": {"utilization": 10.0}},
+    }
+    assert claude_limits._find_windows(payload)["five_hour"]["utilization"] == 10.0
 
 
 def test_org_uuid_accepts_only_canonical_uuids() -> None:

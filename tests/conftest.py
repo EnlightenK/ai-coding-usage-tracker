@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -20,6 +20,26 @@ from ai_coding_usage_tracker.providers import (
     zai,
 )
 from ai_coding_usage_tracker.providers.codex_app_server import CodexAppServerUnavailable
+
+# Every fixture date hangs off this anchor rather than a written-in day.
+# Usage rows are read back through relative windows - `history usage` defaults
+# to 30 days - so a hardcoded date silently ages out of range and takes the
+# test's meaning with it. Yesterday, not today, so nothing depends on the
+# suite finishing before midnight.
+FIXTURE_DAY: date = (datetime.now(tz=timezone.utc) - timedelta(days=1)).date()
+CODEX_SESSION_DIR = FIXTURE_DAY.strftime("%Y/%m/%d")
+OPENCODE_CREATED_MS = int(
+    datetime.combine(FIXTURE_DAY, datetime.min.time(), tzinfo=timezone.utc).timestamp() * 1000
+)
+# Far enough out that the plan reads as active however long the fixture lives.
+CODEX_ACTIVE_UNTIL = (
+    (datetime.now(tz=timezone.utc) + timedelta(days=365)).replace(microsecond=0).isoformat()
+)
+
+
+def fixture_time(hour: int, minute: int = 0, second: int = 0) -> str:
+    """An ISO timestamp on FIXTURE_DAY, shaped like the logs being faked."""
+    return f"{FIXTURE_DAY.isoformat()}T{hour:02d}:{minute:02d}:{second:02d}.000Z"
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -236,7 +256,7 @@ def home(tmp_path: Path) -> Path:
                         "email": "user@example.com",
                         "https://api.openai.com/auth": {
                             "chatgpt_plan_type": "plus",
-                            "chatgpt_subscription_active_until": "2026-09-10T17:13:25+00:00",
+                            "chatgpt_subscription_active_until": CODEX_ACTIVE_UNTIL,
                         },
                     }
                 )
@@ -260,7 +280,7 @@ def home(tmp_path: Path) -> Path:
         {"type": "mode", "mode": "normal"},
         {
             "type": "assistant",
-            "timestamp": "2026-08-15T10:00:00.000Z",
+            "timestamp": fixture_time(10),
             "message": {
                 "id": "msg_1",
                 "model": "claude-sonnet-4-5",
@@ -274,7 +294,7 @@ def home(tmp_path: Path) -> Path:
         },
         {
             "type": "assistant",
-            "timestamp": "2026-08-15T11:00:00.000Z",
+            "timestamp": fixture_time(11),
             "message": {
                 "id": "msg_1",
                 "model": "claude-sonnet-4-5",
@@ -288,7 +308,7 @@ def home(tmp_path: Path) -> Path:
         },
         {
             "type": "assistant",
-            "timestamp": "2026-08-15T12:00:00.000Z",
+            "timestamp": fixture_time(12),
             "message": {
                 "id": "msg_2",
                 "model": "glm-5.2",
@@ -302,7 +322,7 @@ def home(tmp_path: Path) -> Path:
         },
         {
             "type": "assistant",
-            "timestamp": "2026-08-15T13:00:00.000Z",
+            "timestamp": fixture_time(13),
             "message": {
                 "id": "msg_3",
                 "model": "MiniMax-M3",
@@ -320,7 +340,7 @@ def home(tmp_path: Path) -> Path:
 
     codex_session = [
         {
-            "timestamp": "2026-08-15T19:31:11.286Z",
+            "timestamp": fixture_time(19, 31, 11),
             "type": "session_meta",
             "payload": {
                 "session_id": "s1",
@@ -328,7 +348,7 @@ def home(tmp_path: Path) -> Path:
             },
         },
         {
-            "timestamp": "2026-08-15T19:31:12.000Z",
+            "timestamp": fixture_time(19, 31, 12),
             "type": "event_msg",
             "payload": {
                 "type": "token_count",
@@ -343,7 +363,7 @@ def home(tmp_path: Path) -> Path:
             },
         },
         {
-            "timestamp": "2026-08-15T19:35:00.000Z",
+            "timestamp": fixture_time(19, 35),
             "type": "event_msg",
             "payload": {
                 "type": "token_count",
@@ -359,7 +379,7 @@ def home(tmp_path: Path) -> Path:
         },
     ]
     write_lines(
-        tmp_path / ".codex" / "sessions" / "2026" / "08" / "15" / "rollout-demo.jsonl",
+        tmp_path / ".codex" / "sessions" / CODEX_SESSION_DIR / "rollout-demo.jsonl",
         codex_session,
     )
 
@@ -375,7 +395,7 @@ def home(tmp_path: Path) -> Path:
         {
             "id": "msg_zai",
             "role": "assistant",
-            "time": {"created": 1786800000000},
+            "time": {"created": OPENCODE_CREATED_MS},
             "model": {"providerID": "zai-coding-plan", "modelID": "glm-5.2"},
         },
     )
@@ -391,7 +411,7 @@ def home(tmp_path: Path) -> Path:
         {
             "id": "msg_other",
             "role": "assistant",
-            "time": {"created": 1786800000000},
+            "time": {"created": OPENCODE_CREATED_MS},
             "model": {"providerID": "nvidia", "modelID": "llama"},
         },
     )

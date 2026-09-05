@@ -22,8 +22,15 @@ def _usage(day: str, plan: str, source: str = "claude-code", model: str = "m", *
     )
 
 
+def _recent_day() -> str:
+    """A day inside every window these tests read back through."""
+    return (datetime.now(tz=timezone.utc).date() - timedelta(days=1)).isoformat()
+
+
 def test_usage_record_roundtrip(tmp_path: Path) -> None:
-    records = [_usage("2026-08-15", "glm-intl", input_tokens=10, output_tokens=2, requests=1)]
+    # Relative for the same reason as test_usage_history_filters_days_and_plan
+    # below: a hardcoded date ages out of the days=30 window read back here.
+    records = [_usage(_recent_day(), "glm-intl", input_tokens=10, output_tokens=2, requests=1)]
     assert store.record_usage(tmp_path, records) == 1
     history = store.usage_history(tmp_path, days=30)
     assert len(history) == 1
@@ -33,8 +40,9 @@ def test_usage_record_roundtrip(tmp_path: Path) -> None:
 
 def test_usage_upsert_replaces_instead_of_adding(tmp_path: Path) -> None:
     """Re-parsing the same logs must not double the recorded totals."""
-    store.record_usage(tmp_path, [_usage("2026-08-15", "glm-intl", input_tokens=10)])
-    store.record_usage(tmp_path, [_usage("2026-08-15", "glm-intl", input_tokens=25)])
+    day = _recent_day()
+    store.record_usage(tmp_path, [_usage(day, "glm-intl", input_tokens=10)])
+    store.record_usage(tmp_path, [_usage(day, "glm-intl", input_tokens=25)])
     history = store.usage_history(tmp_path, days=30)
     assert len(history) == 1
     assert history[0].input_tokens == 25

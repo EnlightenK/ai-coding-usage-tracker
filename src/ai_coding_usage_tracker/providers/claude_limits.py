@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -149,8 +150,12 @@ def refresh_from_api(
         payload_dump.dump(f"claude-org-{segment}", payload)
         windows = _find_windows(payload)
         if windows:
-            capture_windows(windows, home, source=SOURCE_ACCOUNT_SESSION)
-            return True, None
+            # The write is the whole point of the refresh: reporting success
+            # on a failed write leaves `status` showing stale windows with
+            # nothing to explain why.
+            if capture_windows(windows, home, source=SOURCE_ACCOUNT_SESSION):
+                return True, None
+            return False, "could not write the rate limits cache"
     return False, "account session rejected or usage shape unknown"
 
 
@@ -159,13 +164,14 @@ def _fetch_org_uuid(
 ) -> tuple[str | None, str | None]:
     """Resolve the organization uuid, live if possible and from cache if not.
 
-    The profile endpoint only accepts an OAuth token, and the Claude Code one
-    expires within hours of Claude Code last running - precisely the state
-    this refresh is meant to work in. So a stored profile is consulted when
-    the live lookups fail: the uuid identifies the account and never changes,
-    which makes a cached copy as good as a fetched one.
+    The OAuth token is the credential this endpoint is known to accept, and
+    the Claude Code one expires within hours of Claude Code last running -
+    precisely the state this refresh is meant to work in. So a stored profile
+    is consulted when the live lookups fail: the uuid identifies the account
+    and never changes, which makes a cached copy as good as a fetched one.
     """
     tried: list[str] = []
+    error: str | None = None
     for token, source in _profile_tokens(session_key, home):
         tried.append(source)
         try:
@@ -175,7 +181,11 @@ def _fetch_org_uuid(
                 timeout=timeout,
             )
         except requests.RequestException as exc:
-            return None, f"network error: {exc}"
+            # Keep going: the remaining credential, and the cached profile
+            # below, are exactly what this refresh falls back on when the
+            # network is unreliable.
+            error = f"network error: {exc}"
+            continue
         if response.status_code != 200:
             continue
         try:
@@ -189,7 +199,8 @@ def _fetch_org_uuid(
     if uuid:
         return uuid, None
     attempts = ", ".join(tried) or "no usable credential"
-    return None, f"profile lookup failed via {attempts}, and no cached profile"
+    detail = f" ({error})" if error else ""
+    return None, f"profile lookup failed via {attempts}{detail}, and no cached profile"
 
 
 def _org_uuid(payload: object) -> str | None:
@@ -211,6 +222,16 @@ def _cached_profile(home: Path) -> dict | None:
 
 
 def _profile_tokens(session_key: str, home: Path) -> list[tuple[str, str]]:
+    """Bearer tokens to try against the profile endpoint, in order.
+
+    The session key goes first because it is the durable credential: this
+    refresh runs with Claude Code closed, which is exactly when the OAuth
+    token has lapsed. Whether the endpoint accepts a session key at all is
+    unconfirmed - if it does not, the only cost is one rejected request
+    before the OAuth token, then the cached profile, is tried. Note that
+    `claude_profile._auth_tokens` orders the same two the other way, for a
+    caller that runs while Claude Code is live.
+    """
     tokens: list[tuple[str, str]] = [(session_key, "session key")]
     credentials = read_json_dict(paths.claude_dir(home) / ".credentials.json")
     oauth = credentials.get("claudeAiOauth") if credentials else None
@@ -224,29 +245,51 @@ def _profile_tokens(session_key: str, home: Path) -> list[tuple[str, str]]:
 
 
 def _find_windows(payload: object) -> dict:
-    """Recursively find five_hour/seven_day window dicts in an API payload."""
+    """Find the five_hour/seven_day window dicts in an API payload.
+
+    Known containers are checked first - the payload root, then `data` - so an
+    account-level window always outranks a same-named object nested deeper,
+    such as a per-model breakdown or an overage section. Only then does the
+    breadth-first walk take over, which keeps the refresh working if the
+    /usage shape moves again (it has moved once already) without letting an
+    unrelated `five_hour` silently become the account's headline number.
+    """
     found: dict = {}
-    for window in WINDOW_KEYS:
-        candidate = _find_key(payload, window)
-        if isinstance(candidate, dict) and _normalize_window(candidate):
-            found[window] = candidate
+    for container in _window_containers(payload):
+        for window in WINDOW_KEYS:
+            if window in found:
+                continue
+            candidate = container.get(window)
+            if isinstance(candidate, dict) and _normalize_window(candidate):
+                found[window] = candidate
+        if len(found) == len(WINDOW_KEYS):
+            break
     return found
 
 
-def _find_key(payload: object, key: str) -> object | None:
+def _window_containers(payload: object) -> Iterator[dict]:
+    """Yield dicts that may hold the windows: known roots first, then every
+    nested dict breadth-first, so shallower candidates always win.
+
+    A top-level list is walked rather than rejected: the previous lookup
+    accepted one, and narrowing that silently would be a regression if the
+    endpoint ever answers an array.
+    """
     if isinstance(payload, dict):
-        for k, v in payload.items():
-            if k == key:
-                return v
-            nested = _find_key(v, key)
-            if nested is not None:
-                return nested
-    elif isinstance(payload, list):
-        for item in payload:
-            nested = _find_key(item, key)
-            if nested is not None:
-                return nested
-    return None
+        yield payload
+        nested = payload.get("data")
+        if isinstance(nested, dict):
+            yield nested
+    elif not isinstance(payload, list):
+        return
+    queue: list[object] = [payload]
+    while queue:
+        current = queue.pop(0)
+        if isinstance(current, dict):
+            yield current
+            queue.extend(current.values())
+        elif isinstance(current, list):
+            queue.extend(current)
 
 
 def _normalize_window(window_data: dict) -> dict | None:

@@ -164,7 +164,7 @@ def _status_for_plan(plan: DiscoveredPlan, home: Path) -> PlanStatus:
         subscription, subscription_note = claude.subscription_state(home)
         quotas = claude.cached_quotas(home)
         note = None
-        if not quotas and claude_limits.load_session_key(home):
+        if not _has_usable_quota(quotas) and claude_limits.load_session_key(home):
             success, refresh_note = claude_limits.refresh_from_api(home)
             if success:
                 quotas = claude.cached_quotas(home)
@@ -188,7 +188,9 @@ def _status_for_plan(plan: DiscoveredPlan, home: Path) -> PlanStatus:
             quotas=quotas,
             note=note,
             quotas_captured_at=captured,
-            quotas_source=claude_limits.captured_source(home) if quotas else None,
+            quotas_source=(
+                claude_limits.captured_source(home) if _has_usable_quota(quotas) else None
+            ),
         )
     if plan.plan_id == "chatgpt-codex":
         subscription = codex.subscription_status(home)
@@ -216,6 +218,16 @@ def _status_for_plan(plan: DiscoveredPlan, home: Path) -> PlanStatus:
             note=note,
         )
     raise ValueError(f"unknown plan: {plan.plan_id}")
+
+
+def _has_usable_quota(quotas: list[QuotaWindow]) -> bool:
+    """Whether any window still carries a percentage worth reporting.
+
+    A window whose reset has elapsed keeps its reset time but loses its
+    percentage, so a non-empty list is not the same as usable data - and a
+    refresh must still be attempted for one.
+    """
+    return any(quota.remaining_percent is not None for quota in quotas)
 
 
 def _claude_subscription_note(

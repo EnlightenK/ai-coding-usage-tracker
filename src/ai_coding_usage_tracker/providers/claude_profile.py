@@ -3,7 +3,9 @@
 The Claude Code OAuth token is already scoped for `user:profile`, so the same
 endpoint the desktop app uses returns the account's plan tier, subscription
 status and billing channel without any extra credential. The claude.ai session
-key is accepted as a fallback for machines where the OAuth token has lapsed.
+key is *tried* as a fallback for machines where the OAuth token has lapsed;
+whether the endpoint honours one is unconfirmed, so it is an extra attempt
+rather than a guaranteed second path.
 """
 
 from __future__ import annotations

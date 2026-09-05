@@ -4,6 +4,9 @@ Set PLANTRACK_DEBUG_PAYLOAD=1 to keep the raw JSON of every provider response
 the tracker fetches under <home>/.local/ptk/payloads/ — one file per endpoint,
 overwritten on each fetch. Payloads are wrapped as {"_fetched_at": ...,
 "payload": ...} so the raw content stays intact.
+
+`1`, `true`, `yes` and `on` switch dumping on; every other value, including
+`off` and `disabled`, leaves it off.
 """
 
 from __future__ import annotations
@@ -16,13 +19,16 @@ from pathlib import Path
 from . import fileutil, paths
 
 DUMP_ENV = "PLANTRACK_DEBUG_PAYLOAD"
-_FALSY = {"", "0", "false", "no"}
+# An explicit opt-in list, not a deny-list: dumped payloads contain account
+# emails and plan state, so anything the user did not clearly mean as "on" -
+# `off`, `disabled`, `none`, a typo - must leave dumping switched off.
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
 _DIRNAME = "payloads"
 
 
 def enabled() -> bool:
     """Whether raw payload dumping is switched on."""
-    return os.environ.get(DUMP_ENV, "").strip().lower() not in _FALSY
+    return os.environ.get(DUMP_ENV, "").strip().lower() in _TRUTHY
 
 
 def dump_dir(home: Path | None = None) -> Path:

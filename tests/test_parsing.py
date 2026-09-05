@@ -37,9 +37,7 @@ def test_parse_iso_accepts_z_suffix() -> None:
 
 
 def test_parse_iso_treats_naive_values_as_utc() -> None:
-    assert parse_iso("2026-08-15T10:00:00") == datetime(
-        2026, 8, 15, 10, 0, 0, tzinfo=timezone.utc
-    )
+    assert parse_iso("2026-08-15T10:00:00") == datetime(2026, 8, 15, 10, 0, 0, tzinfo=timezone.utc)
 
 
 def test_parse_iso_preserves_explicit_offset() -> None:

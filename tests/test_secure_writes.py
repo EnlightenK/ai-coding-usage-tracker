@@ -92,6 +92,101 @@ def test_write_failure_returns_false_and_cleans_tmp(tmp_path: Path) -> None:
     assert [p.name for p in tmp_path.iterdir()] == ["occupied"]
 
 
+def test_write_replaces_a_symlink_instead_of_following_it(tmp_path: Path) -> None:
+    """A symlink planted at the target must not redirect the write."""
+    outside = tmp_path / "outside.txt"
+    outside.write_text("untouched", encoding="utf-8")
+    target = tmp_path / "cache.json"
+    target.symlink_to(outside)
+    assert fileutil.secure_write_text(target, "secret")
+    assert not target.is_symlink()
+    assert target.read_text(encoding="utf-8") == "secret"
+    assert outside.read_text(encoding="utf-8") == "untouched"
+
+
+def test_concurrent_writers_do_not_share_a_staging_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two writers of one target must stage in distinct files.
+
+    A cron `status` overlapping an interactive one is the deployment the
+    README recommends, and both used to write `<name>.tmp` - so one process
+    scribbled into the other's half-finished staging file.
+    """
+    target = tmp_path / "cache.json"
+    staged: list[str] = []
+    real_mkstemp = fileutil.tempfile.mkstemp
+
+    def spy(*args: object, **kwargs: object) -> tuple[int, str]:
+        fd, name = real_mkstemp(*args, **kwargs)
+        staged.append(name)
+        # Re-entering here stands in for the overlapping process: it must not
+        # be handed the staging name this call is still holding.
+        if len(staged) == 1:
+            assert fileutil.secure_write_text(target, "from the other process")
+        return fd, name
+
+    monkeypatch.setattr(fileutil.tempfile, "mkstemp", spy)
+    assert fileutil.secure_write_text(target, "from this process")
+
+    assert len(staged) == 2
+    assert staged[0] != staged[1]
+    # Both writes completed; the last to rename wins, intact and whole.
+    assert target.read_text(encoding="utf-8") == "from this process"
+    assert [p.name for p in tmp_path.iterdir()] == ["cache.json"]
+
+
+def test_staging_file_is_created_owner_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The content is 0600 from the first byte, not only after the rename."""
+    modes: list[int] = []
+    real_mkstemp = fileutil.tempfile.mkstemp
+
+    def spy(*args: object, **kwargs: object) -> tuple[int, str]:
+        fd, name = real_mkstemp(*args, **kwargs)
+        modes.append(os.stat(name).st_mode & 0o777)
+        return fd, name
+
+    monkeypatch.setattr(fileutil.tempfile, "mkstemp", spy)
+    target = tmp_path / "cache.json"
+    assert fileutil.secure_write_text(target, "secret")
+    assert modes == [0o600]
+    assert os.stat(target).st_mode & 0o777 == 0o600
+
+
+def test_write_leaks_no_descriptor_or_staging_file_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure between mkstemp and the rename must clean up both.
+
+    mkstemp hands back a raw descriptor, so the error path has to close it
+    itself - otherwise a long-lived `plantrack` process leaks one per write.
+    """
+    opened: list[int] = []
+
+    def failing_fdopen(fd: int, *args: object, **kwargs: object) -> object:
+        opened.append(fd)
+        raise OSError("cannot wrap the descriptor")
+
+    monkeypatch.setattr(fileutil.os, "fdopen", failing_fdopen)
+    target = tmp_path / "cache.json"
+    assert not fileutil.secure_write_text(target, "secret")
+    # Checked before anything else can claim the number back.
+    assert opened
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_write_cleans_up_when_the_content_cannot_be_encoded(tmp_path: Path) -> None:
+    """A non-OSError failure mid-write still takes the staging file with it."""
+    target = tmp_path / "cache.json"
+    with pytest.raises(UnicodeEncodeError):
+        fileutil.secure_write_text(target, "lone surrogate: \ud800")
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_save_config_returns_true_and_keeps_format(
     tmp_path: Path, posix_only: None, chmod_calls: ChmodCalls
 ) -> None:

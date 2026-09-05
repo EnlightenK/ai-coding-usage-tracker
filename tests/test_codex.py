@@ -97,19 +97,17 @@ def test_total_only_session_counts_tokens(home: Path) -> None:
                 "type": "event_msg",
                 "payload": {
                     "type": "token_count",
-                    "info": {"total_token_usage": {
-                        "input_tokens": 0,
-                        "output_tokens": 0,
-                        "total_tokens": 29950,
-                    }},
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 29950,
+                        }
+                    },
                 },
             },
         ],
     )
-    records = [
-        r
-        for r in codex.iter_usage(home)
-        if r.date == FIXTURE_DAY and r.source == "codex"
-    ]
+    records = [r for r in codex.iter_usage(home) if r.date == FIXTURE_DAY and r.source == "codex"]
     total_only = [r for r in records if r.requests == 1 and r.output_tokens == 0]
     assert total_only[0].input_tokens == 29950

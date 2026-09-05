@@ -25,9 +25,7 @@ CACHE_FILENAME = "claude-profile.json"
 MAX_AGE = timedelta(hours=12)
 
 # Statuses worth showing to a user: they mean the plan may stop working.
-PROBLEM_STATUSES = frozenset(
-    {"canceled", "cancelled", "past_due", "unpaid", "expired", "paused"}
-)
+PROBLEM_STATUSES = frozenset({"canceled", "cancelled", "past_due", "unpaid", "expired", "paused"})
 # Billing handled by an app store: Anthropic's own subscription_status is a
 # Stripe artifact there ('incomplete' is normal) and must not be alarmed on.
 EXTERNAL_BILLING = frozenset(
@@ -69,9 +67,7 @@ def cache_file(home: Path | None = None) -> Path:
     return paths.ptk_data_dir(home) / CACHE_FILENAME
 
 
-def load_cached(
-    home: Path | None = None, max_age: timedelta | None = MAX_AGE
-) -> dict | None:
+def load_cached(home: Path | None = None, max_age: timedelta | None = MAX_AGE) -> dict | None:
     """Load a cached profile payload, optionally requiring it to be fresh."""
     try:
         snapshot = json.loads(cache_file(home).read_text(encoding="utf-8"))
@@ -92,9 +88,7 @@ def load_cached(
     return profile
 
 
-def load_profile(
-    home: Path | None = None, timeout: float = 15.0
-) -> tuple[dict | None, str | None]:
+def load_profile(home: Path | None = None, timeout: float = 15.0) -> tuple[dict | None, str | None]:
     """Return the account profile, preferring a fresh cache over the network.
 
     Falls back to a stale cache when the fetch fails, so an offline run keeps

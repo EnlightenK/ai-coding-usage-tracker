@@ -16,6 +16,13 @@ from ..models import QuotaWindow, SubscriptionInfo, UsageRecord
 from ..parsing import parse_iso, positive_int, read_json_dict
 from .codex_app_server import CodexAppServer, CodexAppServerError
 
+# Codex usage reaches the tracker through one of two mutually-exclusive
+# channels, never both at once: account-wide daily totals from the app-server,
+# or locally parsed rollout session logs (see `iter_usage`).  The store keys
+# its de-duplication of superseded rows on these names.
+SESSION_SOURCE = "codex"
+ACCOUNT_SOURCE = "codex-account"
+
 
 @dataclass(frozen=True)
 class DeviceLogin:
@@ -190,7 +197,7 @@ def fetch_remote_usage(home: Path | None = None) -> list[UsageRecord]:
         records.append(
             UsageRecord(
                 date=day,
-                source="codex-account",
+                source=ACCOUNT_SOURCE,
                 plan_id="chatgpt-codex",
                 model="chatgpt-codex account total",
                 input_tokens=max(0, tokens),
@@ -215,9 +222,7 @@ def login_with_device_code(
     home = home or paths.default_home()
     codex_home = paths.codex_dir(home)
     codex_home.mkdir(parents=True, exist_ok=True)
-    with CodexAppServer(
-        codex_home=codex_home, timeout=min(timeout, 30.0)
-    ) as server:
+    with CodexAppServer(codex_home=codex_home, timeout=min(timeout, 30.0)) as server:
         result = server.request("account/login/start", {"type": "chatgptDeviceCode"})
         verification_url = result.get("verificationUrl")
         user_code = result.get("userCode")
@@ -229,8 +234,10 @@ def login_with_device_code(
         completed = server.wait_for_notification(
             "account/login/completed",
             timeout=timeout,
-            predicate=lambda message: isinstance(message.get("params"), dict)
-            and message["params"].get("loginId") == login_id,
+            predicate=lambda message: (
+                isinstance(message.get("params"), dict)
+                and message["params"].get("loginId") == login_id
+            ),
         )
     params = completed.get("params")
     if not isinstance(params, dict) or params.get("success") is not True:
@@ -314,9 +321,7 @@ def _parse_session(file: Path, since: date | None) -> UsageRecord | None:
                     continue
                 if payload.get("type") == "token_count":
                     info = payload.get("info")
-                    if isinstance(info, dict) and isinstance(
-                        info.get("total_token_usage"), dict
-                    ):
+                    if isinstance(info, dict) and isinstance(info.get("total_token_usage"), dict):
                         total_usage = info["total_token_usage"]
                         token_events += 1
                 elif entry.get("type") == "session_meta":
@@ -338,18 +343,14 @@ def _parse_session(file: Path, since: date | None) -> UsageRecord | None:
     cache_read_tokens = positive_int(total_usage.get("cached_input_tokens"))
     cache_write_tokens = positive_int(total_usage.get("cache_write_input_tokens"))
     components = (
-        input_tokens
-        + output_tokens
-        + reasoning_tokens
-        + cache_read_tokens
-        + cache_write_tokens
+        input_tokens + output_tokens + reasoning_tokens + cache_read_tokens + cache_write_tokens
     )
     total = positive_int(total_usage.get("total_tokens"))
     if total > components:
         input_tokens += total - components
     return UsageRecord(
         date=day,
-        source="codex",
+        source=SESSION_SOURCE,
         plan_id=plan_for_model_provider(model_provider),
         model=model_name or "codex",
         input_tokens=input_tokens,

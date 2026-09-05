@@ -12,10 +12,20 @@ from pathlib import Path
 from . import fileutil, paths
 from .models import PlanStatus, QuotaWindow, UsageRecord
 from .parsing import parse_iso
+from .providers import codex
 from .usage import COUNTER_FIELDS
 
 DB_FILENAME = "plantrack.db"
 SNAPSHOT_RETENTION = timedelta(days=180)
+
+# Sources within a group are alternative views of the *same* underlying usage,
+# so a given (date, plan) may be represented by at most one of them: recording
+# one supersedes whatever a sibling recorded for that day.  Codex, for example,
+# reports either account-wide totals or locally parsed sessions per run, and
+# keeping both would double-count the day in `usage_history`.
+EXCLUSIVE_SOURCE_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({codex.SESSION_SOURCE, codex.ACCOUNT_SOURCE}),
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage_days (
@@ -55,11 +65,22 @@ def db_path(home: Path | None = None) -> Path:
     return paths.ptk_data_dir(home) / DB_FILENAME
 
 
+# Database paths whose schema this process has already created.  Applying the
+# schema on every connection is wasted work on read-only paths (`cached_status`
+# runs once per plan), and it is only ever needed once per file.
+_SCHEMA_APPLIED: set[Path] = set()
+
+
 def _connect(home: Path | None) -> sqlite3.Connection:
     target = db_path(home)
     fileutil.secure_dir(target.parent)
+    # Checked before connecting, which itself creates an empty file: a database
+    # removed behind our back needs its schema again even if we once applied it.
+    existed = target.exists()
     conn = sqlite3.connect(target)
-    conn.executescript(_SCHEMA)
+    if not existed or target not in _SCHEMA_APPLIED:
+        conn.executescript(_SCHEMA)
+        _SCHEMA_APPLIED.add(target)
     # The DB file now certainly exists; keep it owner-only where chmod applies.
     fileutil.secure_file(target)
     return conn
@@ -73,6 +94,8 @@ def record_usage(home: Path | None, records: list[UsageRecord]) -> int:
 
     Parsing local logs is idempotent, so a later run replaces (not adds to)
     the numbers it already recorded for the same (date, plan, source, model).
+    Rows left by an EXCLUSIVE_SOURCE_GROUPS sibling of an incoming source are
+    dropped for the days this batch covers, so the newest run's channel wins.
     """
     if not records:
         return 0
@@ -80,6 +103,12 @@ def record_usage(home: Path | None, records: list[UsageRecord]) -> int:
     placeholders = ", ".join("?" for _ in COUNTER_FIELDS)
     updates = ", ".join(f"{field} = excluded.{field}" for field in COUNTER_FIELDS)
     with closing(_connect(home)) as conn, conn:
+        superseded = _superseded_rows(records)
+        if superseded:
+            conn.executemany(
+                "DELETE FROM usage_days WHERE date = ? AND plan_id = ? AND source = ?",
+                superseded,
+            )
         conn.executemany(
             f"""
             INSERT INTO usage_days (date, plan_id, source, model, {columns})
@@ -100,13 +129,29 @@ def record_usage(home: Path | None, records: list[UsageRecord]) -> int:
     return len(records)
 
 
+def _superseded_rows(records: list[UsageRecord]) -> list[tuple[str, str, str]]:
+    """Return (date, plan_id, source) keys this batch makes obsolete.
+
+    Only days, plans and sources the batch actually covers are listed, so
+    unrelated plans, sources and dates keep whatever they recorded earlier.
+    """
+    superseded: set[tuple[str, str, str]] = set()
+    for group in EXCLUSIVE_SOURCE_GROUPS:
+        covered: dict[tuple[str, str], set[str]] = {}
+        for record in records:
+            if record.source in group:
+                key = (record.date.isoformat(), record.plan_id)
+                covered.setdefault(key, set()).add(record.source)
+        for (day, plan_id), incoming in covered.items():
+            superseded.update((day, plan_id, source) for source in group - incoming)
+    return sorted(superseded)
+
+
 def usage_history(
     home: Path | None, days: int = 30, plan_id: str | None = None
 ) -> list[UsageRecord]:
     """Return recorded daily usage for the last `days` days, newest first."""
-    since = (
-        datetime.now(tz=timezone.utc).date() - timedelta(days=days - 1)
-    ).isoformat()
+    since = (datetime.now(tz=timezone.utc).date() - timedelta(days=days - 1)).isoformat()
     query = (
         f"SELECT date, plan_id, source, model, {', '.join(COUNTER_FIELDS)} "
         "FROM usage_days WHERE date >= ?"
@@ -148,9 +193,7 @@ def record_status(home: Path | None, statuses: list[PlanStatus]) -> None:
                     {
                         "kind": quota.kind,
                         "remaining_percent": quota.remaining_percent,
-                        "resets_at": quota.resets_at.isoformat()
-                        if quota.resets_at
-                        else None,
+                        "resets_at": quota.resets_at.isoformat() if quota.resets_at else None,
                     }
                     for quota in status.quotas
                 ]
@@ -239,9 +282,7 @@ def cached_status(
     return payload, stored_at
 
 
-def status_history(
-    home: Path | None, hours: int = 24, plan_id: str | None = None
-) -> list[dict]:
+def status_history(home: Path | None, hours: int = 24, plan_id: str | None = None) -> list[dict]:
     """Return recorded status snapshots from the last `hours`, newest first."""
     since = (datetime.now(tz=timezone.utc) - timedelta(hours=hours)).isoformat()
     query = (

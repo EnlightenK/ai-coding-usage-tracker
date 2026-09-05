@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from contextlib import closing
 from pathlib import Path
 
@@ -13,6 +14,51 @@ from ai_coding_usage_tracker import config, fileutil, payload_dump, store
 from ai_coding_usage_tracker.providers import claude_limits, claude_profile
 
 ChmodCalls = list[tuple[Path, int]]
+
+
+def _can_symlink() -> bool:
+    """Whether this process may create a symlink.
+
+    Deliberately a capability probe rather than a platform check: Windows
+    permits symlinks under Developer Mode or elevation and refuses otherwise
+    with WinError 1314, so testing the machine keeps the check running
+    wherever it can instead of writing off an OS that may well support it.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            (Path(tmp) / "link").symlink_to(Path(tmp) / "target")
+        except (OSError, NotImplementedError):
+            return False
+        return True
+
+
+def _enforces_posix_modes() -> bool:
+    """Whether permission bits set by chmod survive a stat.
+
+    Windows reports 0o666 for any writable file - os.chmod there only toggles
+    the read-only flag - and some network and FAT mounts behave the same way.
+    The 0600 guarantee is a POSIX one, so asserting it is only meaningful
+    where POSIX modes are actually enforced.
+    """
+    fd, name = tempfile.mkstemp()
+    os.close(fd)
+    try:
+        os.chmod(name, 0o600)
+        return os.stat(name).st_mode & 0o777 == 0o600
+    except OSError:
+        return False
+    finally:
+        os.unlink(name)
+
+
+requires_symlinks = pytest.mark.skipif(
+    not _can_symlink(),
+    reason="this process may not create symlinks (Windows needs Developer Mode or elevation)",
+)
+requires_posix_modes = pytest.mark.skipif(
+    not _enforces_posix_modes(),
+    reason="this filesystem does not enforce POSIX permission bits",
+)
 
 
 @pytest.fixture
@@ -92,6 +138,7 @@ def test_write_failure_returns_false_and_cleans_tmp(tmp_path: Path) -> None:
     assert [p.name for p in tmp_path.iterdir()] == ["occupied"]
 
 
+@requires_symlinks
 def test_write_replaces_a_symlink_instead_of_following_it(tmp_path: Path) -> None:
     """A symlink planted at the target must not redirect the write."""
     outside = tmp_path / "outside.txt"
@@ -102,6 +149,42 @@ def test_write_replaces_a_symlink_instead_of_following_it(tmp_path: Path) -> Non
     assert not target.is_symlink()
     assert target.read_text(encoding="utf-8") == "secret"
     assert outside.read_text(encoding="utf-8") == "untouched"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX is where these capabilities must exist")
+def test_capability_probes_do_not_silently_disable_coverage() -> None:
+    """The probes above must not switch off coverage where it has to run.
+
+    A probe that wrongly answered False would skip the two security checks
+    and leave CI green - a guard that quietly protects what it should be
+    catching. On POSIX both capabilities are guaranteed, so failing here is
+    the signal that a probe, not the platform, is at fault.
+    """
+    assert _can_symlink()
+    assert _enforces_posix_modes()
+
+
+def test_write_replaces_a_hardlink_instead_of_writing_through_it(tmp_path: Path) -> None:
+    """A hard link planted at the target must not carry the write to its twin.
+
+    This is the symlink guarantee reached by a route that needs no special
+    privilege, so the invariant stays covered on machines where
+    `test_write_replaces_a_symlink_instead_of_following_it` can only skip.
+    Staging elsewhere and renaming over the name is what breaks the link:
+    writing through the existing entry would reach both names at once.
+    """
+    outside = tmp_path / "outside.txt"
+    outside.write_text("untouched", encoding="utf-8")
+    target = tmp_path / "cache.json"
+    try:
+        os.link(outside, target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"hard links unavailable here: {exc}")
+
+    assert fileutil.secure_write_text(target, "secret")
+    assert target.read_text(encoding="utf-8") == "secret"
+    assert outside.read_text(encoding="utf-8") == "untouched"
+    assert os.stat(target).st_ino != os.stat(outside).st_ino
 
 
 def test_concurrent_writers_do_not_share_a_staging_file(
@@ -136,6 +219,7 @@ def test_concurrent_writers_do_not_share_a_staging_file(
     assert [p.name for p in tmp_path.iterdir()] == ["cache.json"]
 
 
+@requires_posix_modes
 def test_staging_file_is_created_owner_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

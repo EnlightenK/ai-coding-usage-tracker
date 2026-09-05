@@ -263,3 +263,38 @@ def test_remote_bucket_parser_uses_total_as_input_tokens(monkeypatch, home: Path
     assert records[0].input_tokens == 456
     assert records[0].output_tokens == 0
     assert records[0].requests == 0
+
+
+def test_buckets_without_a_limit_id_are_not_dropped() -> None:
+    """De-duplicating against a missing canonical id dropped every bucket.
+
+    With no `rateLimits` key the canonical id is None, so a bucket that also
+    carries no `limitId` compared None != None and was skipped - leaving an
+    account with meters reporting none at all.
+    """
+    quotas = codex.quotas_from_rate_limits(
+        {
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "primary": {
+                        "usedPercent": 25,
+                        "windowDurationMins": 300,
+                        "resetsAt": None,
+                    }
+                }
+            }
+        }
+    )
+    assert [(q.kind, q.remaining_percent) for q in quotas] == [("5h", 75.0)]
+
+
+def test_the_canonical_meter_is_still_de_duplicated() -> None:
+    """The guard must not reintroduce the duplicate it was added to remove."""
+    bucket = {
+        "limitId": "shared",
+        "primary": {"usedPercent": 10, "windowDurationMins": 300, "resetsAt": None},
+    }
+    quotas = codex.quotas_from_rate_limits(
+        {"rateLimits": bucket, "rateLimitsByLimitId": {"shared": bucket}}
+    )
+    assert [q.kind for q in quotas] == ["5h"]

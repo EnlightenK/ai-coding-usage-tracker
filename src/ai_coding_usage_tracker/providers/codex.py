@@ -115,7 +115,13 @@ def quotas_from_rate_limits(payload: dict[str, Any]) -> list[QuotaWindow]:
         entries.append((None, canonical))
     if isinstance(buckets, dict):
         for limit_id, value in buckets.items():
-            if isinstance(value, dict) and value.get("limitId") != canonical_limit_id:
+            # Only de-duplicate when there is a canonical id to match against.
+            # Without the guard a payload carrying no `limitId` compares
+            # None != None, which drops every bucket and leaves the account
+            # reporting no meters at all.
+            if isinstance(value, dict) and (
+                canonical_limit_id is None or value.get("limitId") != canonical_limit_id
+            ):
                 entries.append((str(limit_id), value))
 
     quotas: list[QuotaWindow] = []

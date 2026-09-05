@@ -666,11 +666,17 @@ def test_find_windows_ignores_a_scalar_payload() -> None:
     assert claude_limits._find_windows(None) == {}
 
 
-def _capture_with_reset(home: Path, used: float, resets_in_hours: float) -> None:
+def _capture_with_reset(
+    home: Path,
+    used: float,
+    resets_in_hours: float,
+    source: str = claude_limits.SOURCE_STATUSLINE,
+) -> None:
     """Write a fresh snapshot whose 5h window resets at the given offset."""
     claude_limits.capture_windows(
         {"five_hour": {"used_percentage": used, "resets_at": _future_ts(resets_in_hours)}},
         home,
+        source=source,
     )
 
 
@@ -727,14 +733,65 @@ def test_elapsed_window_triggers_the_session_refresh(
     assert status.quotas_source == claude_limits.SOURCE_ACCOUNT_SESSION
 
 
-def test_elapsed_window_reports_no_source_when_it_cannot_refresh(home: Path) -> None:
-    """With no key and nothing usable, no channel gets credited for numbers
-    that are not being shown."""
+def test_elapsed_window_keeps_reporting_who_wrote_the_snapshot(home: Path) -> None:
+    """`quotas_source` is provenance, not a usability flag.
+
+    Suppressing it for an elapsed window made `_fmt_note` fall back to
+    SOURCE_STATUSLINE, so a snapshot the account session had written was
+    reported as a statusline capture - the exact inference the recorded label
+    exists to prevent.
+    """
     from ai_coding_usage_tracker.tracker import collect_statuses
 
-    _capture_with_reset(home, used=89.0, resets_in_hours=-3.5)
+    _capture_with_reset(
+        home, used=89.0, resets_in_hours=-3.5, source=claude_limits.SOURCE_ACCOUNT_SESSION
+    )
     status = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
-    assert status.quotas_source is None
+    assert status.quotas_source == claude_limits.SOURCE_ACCOUNT_SESSION
+
+
+def test_cached_and_fresh_paths_agree_on_an_elapsed_window(home: Path) -> None:
+    """The overlay used a different predicate from the fresh path, so the same
+    snapshot reported a different source depending on cache state."""
+    from ai_coding_usage_tracker.tracker import collect_statuses
+
+    _capture_with_reset(
+        home, used=89.0, resets_in_hours=-3.5, source=claude_limits.SOURCE_ACCOUNT_SESSION
+    )
+    fresh = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    # Well inside the cache TTL, so this row comes back through the overlay.
+    cached = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    assert "cached" in (cached.note or "")
+    assert cached.quotas_source == fresh.quotas_source
+    assert cached.quotas_source == claude_limits.SOURCE_ACCOUNT_SESSION
+
+
+def test_elapsed_window_note_does_not_claim_a_usable_capture(home: Path) -> None:
+    """An elapsed window stays in the list with no percentage, which made the
+    note branch on a truthy list and claim rate limits it could not show."""
+    from ai_coding_usage_tracker.cli import _fmt_note
+    from ai_coding_usage_tracker.tracker import collect_statuses
+
+    _capture_with_reset(
+        home, used=89.0, resets_in_hours=-3.5, source=claude_limits.SOURCE_ACCOUNT_SESSION
+    )
+    status = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    note = _fmt_note(status)
+    assert "stale capture" in note
+    assert "rate limits as of" not in note
+
+
+def test_usable_window_note_names_the_real_source(home: Path) -> None:
+    _capture_with_reset(
+        home, used=40.0, resets_in_hours=2, source=claude_limits.SOURCE_ACCOUNT_SESSION
+    )
+    from ai_coding_usage_tracker.cli import _fmt_note
+    from ai_coding_usage_tracker.tracker import collect_statuses
+
+    status = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
+    note = _fmt_note(status)
+    assert claude_limits.SOURCE_ACCOUNT_SESSION in note
+    assert "stale capture" not in note
 
 
 def test_the_session_key_is_never_sent_to_the_profile_endpoint(
@@ -796,3 +853,20 @@ def test_a_network_error_on_every_segment_reports_the_cause(
     success, note = claude_limits.refresh_from_api(home)
     assert not success
     assert "connection reset" in (note or "")
+
+
+def test_window_containers_offers_each_container_once() -> None:
+    """The root and `data` were pre-yielded and then re-walked by the queue."""
+    payload = {"data": {"five_hour": {"utilization": 1.0}}, "other": [{"x": 1}]}
+    seen = list(claude_limits._window_containers(payload))
+    assert sum(1 for c in seen if c is payload) == 1
+    assert sum(1 for c in seen if c is payload["data"]) == 1
+
+
+def test_window_containers_still_prefers_shallower_namesakes() -> None:
+    """Switching to a deque must keep the breadth-first ordering intact."""
+    payload = {
+        "deep": {"deeper": {"five_hour": {"utilization": 99.0}}},
+        "shallow": {"five_hour": {"utilization": 10.0}},
+    }
+    assert claude_limits._find_windows(payload)["five_hour"]["utilization"] == 10.0

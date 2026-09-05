@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import deque
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -276,16 +277,26 @@ def _window_containers(payload: object) -> Iterator[dict]:
     accepted one, and narrowing that silently would be a regression if the
     endpoint ever answers an array.
     """
+    queue: deque[object] = deque()
     if isinstance(payload, dict):
         yield payload
         nested = payload.get("data")
         if isinstance(nested, dict):
             yield nested
-    elif not isinstance(payload, list):
+        # Descend from the values, minus the `data` container already yielded
+        # above - re-walking it would just re-offer a container checked first.
+        # A non-dict `data` was never pre-yielded, so it still gets walked.
+        queue.extend(
+            value
+            for key, value in payload.items()
+            if not (key == "data" and isinstance(value, dict))
+        )
+    elif isinstance(payload, list):
+        queue.extend(payload)
+    else:
         return
-    queue: list[object] = [payload]
     while queue:
-        current = queue.pop(0)
+        current = queue.popleft()
         if isinstance(current, dict):
             yield current
             queue.extend(current.values())

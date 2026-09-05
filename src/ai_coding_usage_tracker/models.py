@@ -15,6 +15,17 @@ class QuotaWindow:
     resets_at: datetime | None
 
 
+def has_usable_quota(quotas: list[QuotaWindow]) -> bool:
+    """Whether any window still carries a percentage worth reporting.
+
+    A window whose reset has elapsed keeps its reset time but loses its
+    percentage, so a non-empty list is not the same as usable data. This asks
+    only about usability - which channel wrote the snapshot is recorded
+    separately, and stays true whether or not the numbers are still good.
+    """
+    return any(quota.remaining_percent is not None for quota in quotas)
+
+
 @dataclass(frozen=True)
 class SubscriptionInfo:
     """Subscription details attached to a discovered plan.

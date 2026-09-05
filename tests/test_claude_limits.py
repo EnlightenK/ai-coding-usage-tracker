@@ -284,12 +284,15 @@ def test_refresh_success_via_api(home: Path, monkeypatch: pytest.MonkeyPatch) ->
             return self._payload
 
     def fake_get(url: str, headers: dict, timeout: float) -> FakeResponse:
-        assert headers["Authorization"] == "Bearer sk-ant-sid01-test"
         if url.endswith("/oauth/profile"):
+            # The profile endpoint takes the OAuth token; a session key is
+            # refused there with 403 account_session_invalid.
+            assert headers["Authorization"] == "Bearer x"
             return FakeResponse(
                 200,
                 {"organization": {"uuid": "org-123"}},
             )
+        assert headers["Authorization"] == "Bearer sk-ant-sid01-test"
         if url.endswith("/usage"):
             return FakeResponse(404, {})
         if url.endswith("/rate_limits"):
@@ -442,19 +445,23 @@ def test_refresh_uses_the_cached_org_uuid_when_the_profile_is_denied(
     assert quotas["5h"] == 56.0
 
 
-def test_refresh_reports_every_credential_it_tried(
+def test_refresh_reports_the_credential_it_tried(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With no cached profile either, the note must name what was attempted
-    rather than blaming whichever credential happened to be tried last."""
+    """With no cached profile either, the note must name what was attempted.
+
+    Only the OAuth token is named: the session key is never sent to the
+    profile endpoint, so reporting it as rejected would blame a working
+    cookie for the wrong endpoint's refusal.
+    """
     monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
     monkeypatch.setattr(
         claude_limits.requests, "get", _profile_denied_api({}, [])
     )
     success, note = claude_limits.refresh_from_api(home)
     assert not success
-    assert "session key" in (note or "")
     assert "claude code oauth" in (note or "")
+    assert "session key" not in (note or "")
     assert "no cached profile" in (note or "")
 
 
@@ -613,7 +620,6 @@ def test_refresh_network_error_note_names_the_credentials_and_the_cause(
     monkeypatch.setattr(claude_limits.requests, "get", fake_get)
     success, note = claude_limits.refresh_from_api(home)
     assert not success
-    assert "session key" in (note or "")
     assert "claude code oauth" in (note or "")
     assert "connection reset" in (note or "")
     assert "no cached profile" in (note or "")
@@ -729,3 +735,64 @@ def test_elapsed_window_reports_no_source_when_it_cannot_refresh(home: Path) -> 
     _capture_with_reset(home, used=89.0, resets_in_hours=-3.5)
     status = {s.plan_id: s for s in collect_statuses(home)}["claude-code"]
     assert status.quotas_source is None
+
+
+def test_the_session_key_is_never_sent_to_the_profile_endpoint(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verified against the live endpoint: a session key there is answered
+    with 403 account_session_invalid, so sending one buys a wasted round trip
+    and a note blaming the cookie for the wrong endpoint's refusal."""
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    profile_auth: list[str] = []
+
+    def fake_get(url: str, headers: dict, timeout: float) -> _FakeResponse:
+        if url.endswith("/oauth/profile"):
+            profile_auth.append(headers["Authorization"])
+            return _FakeResponse(200, {"organization": {"uuid": "org-123"}})
+        if url.endswith("/usage"):
+            return _FakeResponse(200, {"five_hour": {"utilization": 5.0}})
+        return _FakeResponse(200, {"rate_limit_tier": "default_claude_ai"})
+
+    monkeypatch.setattr(claude_limits.requests, "get", fake_get)
+    assert claude_limits.refresh_from_api(home)[0]
+    assert profile_auth == ["Bearer x"]
+
+
+def test_a_network_error_on_usage_still_tries_rate_limits(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One failed segment must not decide the whole refresh, and the cause
+    has to survive into the note."""
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+    seen: list[str] = []
+
+    def fake_get(url: str, headers: dict, timeout: float) -> _FakeResponse:
+        seen.append(url)
+        if url.endswith("/oauth/profile"):
+            return _FakeResponse(200, {"organization": {"uuid": "org-123"}})
+        if url.endswith("/usage"):
+            raise claude_limits.requests.RequestException("connection reset")
+        return _FakeResponse(200, {"five_hour": {"used_percentage": 8.0}})
+
+    monkeypatch.setattr(claude_limits.requests, "get", fake_get)
+    success, note = claude_limits.refresh_from_api(home)
+    assert success, note
+    assert any(url.endswith("/rate_limits") for url in seen)
+    assert {q.kind: q.remaining_percent for q in claude.cached_quotas(home)}["5h"] == 92.0
+
+
+def test_a_network_error_on_every_segment_reports_the_cause(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PLANTRACK_CLAUDE_SESSION_KEY", "sk-ant-sid01-test")
+
+    def fake_get(url: str, headers: dict, timeout: float) -> _FakeResponse:
+        if url.endswith("/oauth/profile"):
+            return _FakeResponse(200, {"organization": {"uuid": "org-123"}})
+        raise claude_limits.requests.RequestException("connection reset")
+
+    monkeypatch.setattr(claude_limits.requests, "get", fake_get)
+    success, note = claude_limits.refresh_from_api(home)
+    assert not success
+    assert "connection reset" in (note or "")

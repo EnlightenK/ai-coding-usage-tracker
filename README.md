@@ -244,6 +244,11 @@ token — `GET /api/organizations/{uuid}/rate_limits` and `/usage` reject it wit
 claude.ai *account session*. That cookie is what the claude.ai web and desktop
 apps send, and it is the only credential that unlocks this path.
 
+The split runs both ways: `/api/oauth/profile` refuses a session key with the
+same `403 account_session_invalid`. Neither credential substitutes for the
+other, so each is only ever sent to the endpoint that accepts it — the OAuth
+token for the profile, the session key for the organization endpoints.
+
 The windows live in `/usage`, as `five_hour` and `seven_day` objects keyed on
 `utilization` (percent used) plus an ISO `resets_at`. `/rate_limits` answers
 200 with per-model concurrency tiers and no usage windows at all, so it is

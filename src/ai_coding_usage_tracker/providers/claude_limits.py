@@ -125,12 +125,13 @@ def refresh_from_api(
     if not session_key:
         return False, "no claude.ai session key configured"
 
-    org_uuid, note = _fetch_org_uuid(session_key, home, timeout)
+    org_uuid, note = _fetch_org_uuid(home, timeout)
     if not org_uuid:
         return False, note or "could not resolve organization uuid"
 
     # `usage` carries the five_hour/seven_day windows; `rate_limits` answers 200
     # with concurrency tiers only, so it is tried second as a shape fallback.
+    error: str | None = None
     for segment in ("usage", "rate_limits"):
         url = f"{API_BASE}/organizations/{org_uuid}/{segment}"
         try:
@@ -140,7 +141,10 @@ def refresh_from_api(
                 timeout=timeout,
             )
         except requests.RequestException as exc:
-            return False, f"network error: {exc}"
+            # Same reasoning as _fetch_org_uuid: one failed segment must not
+            # decide the whole refresh, and the cause has to survive to the note.
+            error = f"network error: {exc}"
+            continue
         if response.status_code != 200:
             continue
         try:
@@ -156,23 +160,21 @@ def refresh_from_api(
             if capture_windows(windows, home, source=SOURCE_ACCOUNT_SESSION):
                 return True, None
             return False, "could not write the rate limits cache"
-    return False, "account session rejected or usage shape unknown"
+    return False, error or "account session rejected or usage shape unknown"
 
 
-def _fetch_org_uuid(
-    session_key: str, home: Path, timeout: float
-) -> tuple[str | None, str | None]:
+def _fetch_org_uuid(home: Path, timeout: float) -> tuple[str | None, str | None]:
     """Resolve the organization uuid, live if possible and from cache if not.
 
-    The OAuth token is the credential this endpoint is known to accept, and
-    the Claude Code one expires within hours of Claude Code last running -
+    The OAuth token is the only credential this endpoint accepts, and the
+    Claude Code one expires within hours of Claude Code last running -
     precisely the state this refresh is meant to work in. So a stored profile
-    is consulted when the live lookups fail: the uuid identifies the account
+    is consulted when the live lookup fails: the uuid identifies the account
     and never changes, which makes a cached copy as good as a fetched one.
     """
     tried: list[str] = []
     error: str | None = None
-    for token, source in _profile_tokens(session_key, home):
+    for token, source in _profile_tokens(home):
         tried.append(source)
         try:
             response = requests.get(
@@ -221,18 +223,17 @@ def _cached_profile(home: Path) -> dict | None:
     return claude_profile.load_cached(home, max_age=None)
 
 
-def _profile_tokens(session_key: str, home: Path) -> list[tuple[str, str]]:
-    """Bearer tokens to try against the profile endpoint, in order.
+def _profile_tokens(home: Path) -> list[tuple[str, str]]:
+    """Bearer tokens worth sending to the profile endpoint.
 
-    The session key goes first because it is the durable credential: this
-    refresh runs with Claude Code closed, which is exactly when the OAuth
-    token has lapsed. Whether the endpoint accepts a session key at all is
-    unconfirmed - if it does not, the only cost is one rejected request
-    before the OAuth token, then the cached profile, is tried. Note that
-    `claude_profile._auth_tokens` orders the same two the other way, for a
-    caller that runs while Claude Code is live.
+    The claude.ai session key is deliberately absent: the endpoint answers a
+    session key with 403 `account_session_invalid`, so sending one only costs
+    a round trip and produces a "session key rejected" note that blames a
+    perfectly good cookie for being the wrong class of credential. The split
+    runs both ways - the organization usage endpoints reject the OAuth token
+    with the same code.
     """
-    tokens: list[tuple[str, str]] = [(session_key, "session key")]
+    tokens: list[tuple[str, str]] = []
     credentials = read_json_dict(paths.claude_dir(home) / ".credentials.json")
     oauth = credentials.get("claudeAiOauth") if credentials else None
     if isinstance(oauth, dict):

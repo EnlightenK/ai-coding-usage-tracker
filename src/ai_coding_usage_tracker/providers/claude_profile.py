@@ -2,10 +2,10 @@
 
 The Claude Code OAuth token is already scoped for `user:profile`, so the same
 endpoint the desktop app uses returns the account's plan tier, subscription
-status and billing channel without any extra credential. The claude.ai session
-key is *tried* as a fallback for machines where the OAuth token has lapsed;
-whether the endpoint honours one is unconfirmed, so it is an extra attempt
-rather than a guaranteed second path.
+status and billing channel without any extra credential. There is no second
+credential: the endpoint rejects a claude.ai session key with 403
+`account_session_invalid`, so once the OAuth token lapses the cached profile
+is the only remaining source.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import requests
 
 from .. import fileutil, paths
 from ..parsing import now_ms, parse_iso, read_json_dict
-from .claude_limits import PROFILE_URL, load_session_key
+from .claude_limits import PROFILE_URL
 
 CACHE_FILENAME = "claude-profile.json"
 MAX_AGE = timedelta(hours=12)
@@ -181,7 +181,12 @@ def _plan_type(account: dict, organization: dict) -> str | None:
 
 
 def _auth_tokens(home: Path) -> list[tuple[str, str]]:
-    """Return usable bearer tokens, best first: OAuth token, then session key."""
+    """Return the bearer tokens this endpoint accepts - the OAuth token only.
+
+    A claude.ai session key is not an alternative here: it is refused with
+    403 `account_session_invalid`, so trying one would spend a request to
+    report a misleading rejection.
+    """
     tokens: list[tuple[str, str]] = []
     oauth = _read_oauth(home)
     if oauth:
@@ -191,9 +196,6 @@ def _auth_tokens(home: Path) -> list[tuple[str, str]]:
             fresh = not isinstance(expires, (int, float)) or expires > now_ms()
             if fresh:
                 tokens.append((access, "Claude Code OAuth token"))
-    session_key = load_session_key(home)
-    if session_key:
-        tokens.append((session_key, "claude.ai session key"))
     return tokens
 
 

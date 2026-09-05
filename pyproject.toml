@@ -1,6 +1,6 @@
 [project]
 name = "ai-coding-usage-tracker"
-version = "0.2.3"
+version = "0.2.4"
 description = "Track quotas, usage and subscription state for AI coding plans (MiniMax, GLM, Claude Code, Codex)."
 readme = "README.md"
 authors = [

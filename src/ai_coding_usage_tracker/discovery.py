@@ -176,8 +176,14 @@ def _find_claude_settings_key(
     plan.key_sources.append(f"~/.claude/{filename}")
 
 
-def discover_plans(home: Path | None = None) -> list[DiscoveredPlan]:
-    """Scan local tool configs and return every coding plan that can be tracked."""
+def discover_plans(
+    home: Path | None = None, *, include_disabled: bool = False
+) -> list[DiscoveredPlan]:
+    """Scan local tool configs and return every coding plan that can be tracked.
+
+    Disabled plans are only returned when `include_disabled` is set; plans
+    without any key source are never returned either way.
+    """
     home = home or paths.default_home()
     discovered: dict[str, DiscoveredPlan] = {}
 
@@ -255,5 +261,5 @@ def discover_plans(home: Path | None = None) -> list[DiscoveredPlan]:
     return [
         discovered[plan_id]
         for plan_id in PLAN_ORDER
-        if plan_id not in disabled and discovered[plan_id].key_sources
+        if discovered[plan_id].key_sources and (include_disabled or plan_id not in disabled)
     ]

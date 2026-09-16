@@ -95,6 +95,40 @@ def test_disabled_plan_excluded(home: Path) -> None:
     assert "minimax-cn" in ids
 
 
+def test_include_disabled_default_still_hides_disabled_plans(home: Path) -> None:
+    """Regression guard: adding include_disabled must not change the default.
+
+    Every existing caller (status, scan, plan list) relies on disabled plans
+    staying hidden unless the new keyword is passed explicitly.
+    """
+    config.set_disabled(home, "minimax-cn", True)
+    ids = {p.plan_id for p in discover_plans(home)}
+    assert "minimax-cn" not in ids
+
+
+def test_include_disabled_surfaces_disabled_plan_with_sources(home: Path) -> None:
+    """A disabled-but-configured plan stays discoverable with the flag set.
+
+    This is what lets `plan add --from-scan` re-add a plan the user removed:
+    its key and key_sources must survive the disabled flag untouched.
+    """
+    config.set_disabled(home, "minimax-cn", True)
+    plans = {p.plan_id: p for p in discover_plans(home, include_disabled=True)}
+    assert plans["minimax-cn"].api_key == "mm-cn-key"
+    assert plans["minimax-cn"].key_sources == ["~/.local/share/opencode/auth.json"]
+
+
+def test_include_disabled_still_requires_key_sources(tmp_path: Path) -> None:
+    """The flag widens only the disabled filter, never the key_sources one.
+
+    A plan with no credentials on disk must stay invisible even when the
+    caller asks for disabled plans, or `--from-scan` would offer to track
+    plans that have nothing to track.
+    """
+    config.set_disabled(tmp_path, "claude-code", True)
+    assert discover_plans(tmp_path, include_disabled=True) == []
+
+
 FALLBACK = "https://fallback.example"
 
 

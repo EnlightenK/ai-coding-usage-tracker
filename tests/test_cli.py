@@ -347,6 +347,187 @@ def test_plan_add_prompts_for_key_when_flag_omitted(
     assert _status_plan_ids() == {"glm-intl"}
 
 
+def test_plan_add_from_scan_copies_glm_key_from_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--from-scan` stores the key found in settings-glm.json without the user
+    pasting it - and without the secret ever reaching the output."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    write_json(
+        tmp_path / ".claude" / "settings-glm.json",
+        {
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "key-from-settings",
+                "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+            }
+        },
+    )
+    result = runner.invoke(app, ["plan", "add", "glm-intl", "--from-scan"])
+    assert result.exit_code == 0
+    assert config.manual_keys(tmp_path)["glm-intl"]["api_key"] == "key-from-settings"
+    assert "glm-intl" in _status_plan_ids()
+    assert "Key copied from" in result.output
+    assert "key-from-settings" not in result.output
+
+
+def test_plan_add_from_scan_normalizes_minimax_host(
+    fake_env: pytest.MonkeyPatch, home: Path
+) -> None:
+    """A host picked up from a scan is sanitized exactly like a pasted one."""
+    result = runner.invoke(app, ["plan", "add", "minimax-intl", "--from-scan"])
+    assert result.exit_code == 0
+    assert config.manual_keys(home)["minimax-intl"]["api_host"] == "https://www.minimax.io"
+
+
+def test_plan_add_from_scan_rejects_foreign_glm_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A settings-glm.json pointed at another provider must not donate its key
+    to Z.ai: discovery skips it, so the add fails with nothing stored."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    write_json(
+        tmp_path / ".claude" / "settings-glm.json",
+        {
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "key-from-settings",
+                "ANTHROPIC_BASE_URL": "https://api.some-other-provider.example",
+            }
+        },
+    )
+    result = runner.invoke(app, ["plan", "add", "glm-intl", "--from-scan"])
+    assert result.exit_code == 2
+    assert config.manual_keys(tmp_path) == {}
+
+
+def test_plan_add_from_scan_oauth_plan_enables_without_key(
+    fake_env: pytest.MonkeyPatch, home: Path
+) -> None:
+    """An OAuth plan has nothing to store: --from-scan just enables it and says
+    tracking comes from its credential file."""
+    result = runner.invoke(app, ["plan", "add", "claude-code", "--from-scan"])
+    assert result.exit_code == 0
+    assert config.manual_keys(home) == {}
+    assert "credentials" in result.output.lower()
+
+
+def test_plan_add_from_scan_oauth_plan_without_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no credential file the OAuth plan is not discoverable, so the add
+    refuses instead of pretending to track it."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    assert runner.invoke(app, ["plan", "add", "claude-code", "--from-scan"]).exit_code == 2
+
+
+def test_plan_add_from_scan_recovers_removed_plan(
+    fake_env: pytest.MonkeyPatch, home: Path
+) -> None:
+    """`plan remove` is not a dead end: --from-scan still sees disabled plans
+    and re-adds them from their on-disk credentials."""
+    assert runner.invoke(app, ["plan", "remove", "minimax-intl"]).exit_code == 0
+    result = runner.invoke(app, ["plan", "add", "minimax-intl", "--from-scan"])
+    assert result.exit_code == 0
+    assert "minimax-intl" in _status_plan_ids()
+
+
+def test_plan_add_from_scan_reports_already_stored_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stored key wins discovery, so --from-scan reports it instead of
+    overwriting it with whatever a tool config holds."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    assert runner.invoke(app, ["plan", "add", "minimax-cn", "--api-key", "k"]).exit_code == 0
+    result = runner.invoke(app, ["plan", "add", "minimax-cn", "--from-scan"])
+    assert result.exit_code == 0
+    assert "already tracked via the stored API key" in result.output
+    assert config.manual_keys(tmp_path)["minimax-cn"]["api_key"] == "k"
+
+
+def test_plan_add_from_scan_unknown_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plan id plantrack has never heard of is rejected before discovery is
+    even consulted."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    assert runner.invoke(app, ["plan", "add", "nope", "--from-scan"]).exit_code == 2
+
+
+def test_plan_add_from_scan_listing_writes_nothing(
+    fake_env: pytest.MonkeyPatch, home: Path
+) -> None:
+    """`--from-scan` without a plan id is a read-only listing of what could be
+    added, tracking states included."""
+    result = runner.invoke(app, ["plan", "add", "--from-scan"])
+    assert result.exit_code == 0
+    assert "GLM Coding Plan" in result.output
+    assert "tracked" in result.output
+    assert config.manual_keys(home) == {}
+
+
+def test_plan_add_from_scan_all_tracks_and_is_idempotent(
+    fake_env: pytest.MonkeyPatch, home: Path
+) -> None:
+    """`--all` tracks every discoverable plan, and a second run reports rather
+    than errors or overwrites."""
+    expected = {"minimax-cn", "minimax-intl", "glm-intl", "claude-code", "chatgpt-codex"}
+    result = runner.invoke(app, ["plan", "add", "--from-scan", "--all"])
+    assert result.exit_code == 0
+    assert _status_plan_ids() == expected
+    again = runner.invoke(app, ["plan", "add", "--from-scan", "--all"])
+    assert again.exit_code == 0
+
+
+def test_plan_add_from_scan_conflict_guards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ambiguous invocations are usage errors, not partial adds."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    guards = [
+        ["plan", "add", "--from-scan", "--api-key", "X"],
+        ["plan", "add", "--all"],
+        ["plan", "add", "glm-intl", "--from-scan", "--all"],
+        ["plan", "add"],
+    ]
+    for argv in guards:
+        assert runner.invoke(app, argv).exit_code == 2
+    assert config.manual_keys(tmp_path) == {}
+
+
+def test_plan_add_from_scan_all_on_empty_machine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty machine is an informational no-op, not an error."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    result = runner.invoke(app, ["plan", "add", "--from-scan", "--all"])
+    assert result.exit_code == 0
+    assert "No plans discovered" in result.output
+
+
+def test_scan_shows_disabled_plan_state(fake_env: pytest.MonkeyPatch, home: Path) -> None:
+    """A removed-but-configured plan stays visible in scan, flagged disabled in
+    both the table and the JSON payload."""
+    assert runner.invoke(app, ["plan", "disable", "minimax-cn"]).exit_code == 0
+    result = runner.invoke(app, ["scan"])
+    assert result.exit_code == 0
+    assert "MiniMax Coding Plan (CN)" in result.output
+    assert "disabled" in result.output
+    payload = json.loads(runner.invoke(app, ["scan", "--json"]).output)
+    by_id = {p["plan_id"]: p for p in payload["plans"]}
+    assert by_id["minimax-cn"]["disabled"] is True
+    assert by_id["glm-intl"]["disabled"] is False
+
+
+def test_plan_add_from_scan_listing_escapes_markup(
+    fake_env: pytest.MonkeyPatch, home: Path, wide_console: None
+) -> None:
+    """The listing shares scan's table, so a hostile MCP server name must print
+    verbatim there too."""
+    _write_hostile_codex_config(home)
+    result = runner.invoke(app, ["plan", "add", "--from-scan"])
+    assert result.exit_code == 0
+    assert HOSTILE_SOURCE in result.output
+
+
 def test_plan_disable_rejects_unknown_plan(tmp_path: Path) -> None:
     assert runner.invoke(app, ["plan", "disable", "nope"]).exit_code == 2
 

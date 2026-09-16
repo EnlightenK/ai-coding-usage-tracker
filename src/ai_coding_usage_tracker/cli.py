@@ -19,6 +19,7 @@ from . import __version__, config, paths, store
 from .discovery import (
     MINIMAX_DEFAULT_HOSTS,
     PLAN_LABELS,
+    DiscoveredPlan,
     discover_plans,
     sanitize_minimax_host,
 )
@@ -383,21 +384,148 @@ def plan_list(
     console.print(table)
 
 
+def _print_discoverable_plans(plans: list[DiscoveredPlan], disabled: set[str]) -> None:
+    """Print the discovered-plans table shared by `plan add --from-scan` and `scan`."""
+    if not plans:
+        console.print("[dim]No coding plans discovered on this machine.[/dim]")
+        return
+    table = Table(title="Discovered plans")
+    table.add_column("Plan", style="bold")
+    table.add_column("Plan id")
+    table.add_column("Auth")
+    table.add_column("State")
+    table.add_column("Key sources", overflow="fold")
+    for plan in plans:
+        state = "[red]disabled[/red]" if plan.plan_id in disabled else "[green]tracked[/green]"
+        # Key sources carry user-controlled text (an MCP server name out of
+        # ~/.codex/config.toml), so they must not be read as rich markup.
+        table.add_row(
+            plan.name,
+            plan.plan_id,
+            plan.auth_kind,
+            state,
+            escape("; ".join(plan.key_sources)),
+        )
+    console.print(table)
+
+
+def _track_plan_from_scan(target_home: Path, plan: DiscoveredPlan) -> tuple[str, str | None]:
+    """Apply the --from-scan action to one discovered plan; return (summary, detail).
+
+    The key value itself never appears in a message — only the source it was
+    copied from. Discovery resolves manually stored keys first and skips every
+    file source once a key is stored, so `key_sources == ["plantrack config"]`
+    holds exactly when the key already lives in plantrack config: --from-scan
+    can only ever fill a gap, never clobber a stored key.
+    """
+    if plan.key_sources == ["plantrack config"]:
+        config.set_disabled(target_home, plan.plan_id, False)
+        return "already tracked via the stored API key", None
+    if plan.auth_kind == "oauth":
+        config.set_disabled(target_home, plan.plan_id, False)
+        return (
+            "tracked from its own credentials (nothing to store)",
+            f"Credentials: {escape(plan.key_sources[0])}",
+        )
+    if not config.set_manual_key(target_home, plan.plan_id, plan.api_key or "", plan.api_host):
+        err_console.print(
+            f"[red]Could not write {escape(str(config.config_file(target_home)))}.[/red]"
+        )
+        raise typer.Exit(code=1)
+    config.set_disabled(target_home, plan.plan_id, False)
+    return (
+        "now tracked via the stored API key",
+        f"Key copied from {escape(plan.key_sources[0])}; "
+        f"saved to {escape(str(config.config_file(target_home)))}",
+    )
+
+
+def _add_plan_from_scan(target_home: Path, plan_id: str) -> None:
+    """Track one plan using the credentials discovery finds on this machine."""
+    discovered = {p.plan_id: p for p in discover_plans(target_home, include_disabled=True)}
+    plan = discovered.get(plan_id)
+    if plan is None:
+        err_console.print(
+            f"[red]The scan found no credentials for '{escape(plan_id)}' "
+            "on this machine; nothing to add from.[/red]"
+        )
+        _print_discoverable_plans(list(discovered.values()), config.disabled_plans(target_home))
+        raise typer.Exit(code=2)
+    summary, detail = _track_plan_from_scan(target_home, plan)
+    console.print(f"[green]{PLAN_LABELS[plan_id]} {summary}.[/green]")
+    if detail:
+        console.print(f"{detail}.")
+
+
+def _add_all_plans_from_scan(target_home: Path) -> None:
+    """Track every discoverable plan using the credentials found on this machine."""
+    plans = discover_plans(target_home, include_disabled=True)
+    if not plans:
+        console.print("[dim]No plans discovered on this machine.[/dim]")
+        return
+    # discovery already returns plans in PLAN_ORDER order.
+    for plan in plans:
+        summary, _ = _track_plan_from_scan(target_home, plan)
+        console.print(f"[green]{plan.name}[/green] {summary}.")
+
+
 @plan_app.command("add")
 def plan_add(
-    plan_id: str = typer.Argument(..., help="Plan id to track (see `plantrack plan list`)."),
+    plan_id: str | None = typer.Argument(
+        None, help="Plan id to track (see `plantrack plan list`)."
+    ),
     api_key: str | None = typer.Option(
-        None,
-        "--api-key",
-        help="API key for the plan's quota API (hidden prompt if omitted).",
+        None, "--api-key", help="API key for the plan's quota API (hidden prompt if omitted)."
     ),
     api_host: str | None = typer.Option(
         None, "--api-host", help="Quota API host override (MiniMax plans only)."
     ),
+    from_scan: bool = typer.Option(
+        False,
+        "--from-scan",
+        help=("Track plans using the credentials `plantrack scan` finds on this machine."),
+    ),
+    all_plans: bool = typer.Option(
+        False, "--all", help="With --from-scan: add every discoverable plan."
+    ),
     home: Path | None = typer.Option(None, help="Home directory for the config file."),
 ) -> None:
-    """Track a plan by storing an API key, even if no tool config exists."""
+    """Track a plan: paste an API key, or adopt the credentials a scan found."""
+    target_home = home or paths.default_home()
+    if all_plans and not from_scan:
+        err_console.print("[red]--all works only together with --from-scan.[/red]")
+        raise typer.Exit(code=2)
+    if from_scan and (api_key is not None or api_host is not None):
+        err_console.print(
+            "[red]--from-scan copies the key it finds on disk; do not combine it with "
+            "--api-key or --api-host.[/red]"
+        )
+        raise typer.Exit(code=2)
+    if all_plans and plan_id is not None:
+        err_console.print(
+            "[red]--all adds every discoverable plan; pass either a plan id or --all.[/red]"
+        )
+        raise typer.Exit(code=2)
+    if plan_id is None and not from_scan:
+        err_console.print(
+            "[red]Usage: plantrack plan add PLAN_ID [--api-key KEY] | "
+            "plantrack plan add --from-scan [--all].[/red]"
+        )
+        raise typer.Exit(code=2)
+    if plan_id is None:
+        if all_plans:
+            _add_all_plans_from_scan(target_home)
+        else:
+            # Listing mode: store nothing, just show what a scan would find.
+            _print_discoverable_plans(
+                discover_plans(target_home, include_disabled=True),
+                config.disabled_plans(target_home),
+            )
+        return
     _require_plan_id(plan_id)
+    if from_scan:
+        _add_plan_from_scan(target_home, plan_id)
+        return
     if api_host is not None:
         if plan_id not in MINIMAX_DEFAULT_HOSTS:
             err_console.print(
@@ -423,7 +551,6 @@ def plan_add(
     if not api_key.strip():
         err_console.print("[red]The API key must not be empty.[/red]")
         raise typer.Exit(code=2)
-    target_home = home or paths.default_home()
     config_path = escape(str(config.config_file(target_home)))
     if not config.set_manual_key(target_home, plan_id, api_key.strip(), api_host):
         err_console.print(f"[red]Could not write {config_path}.[/red]")
@@ -484,6 +611,7 @@ def scan(
 ) -> None:
     """Scan this PC for coding tool configs, credentials and usage logs."""
     target_home = home or paths.default_home()
+    disabled = config.disabled_plans(target_home)
     files, logs, plans = collect_scan(target_home)
     if json_output:
         payload = {
@@ -495,6 +623,7 @@ def scan(
                     "name": p.name,
                     "auth_kind": p.auth_kind,
                     "key_sources": p.key_sources,
+                    "disabled": p.plan_id in disabled,
                 }
                 for p in plans
             ],
@@ -530,17 +659,7 @@ def scan(
             escape(entry.path),
         )
     console.print(log_table)
-    plan_table = Table(title="Discovered plans")
-    plan_table.add_column("Plan", style="bold")
-    plan_table.add_column("Auth")
-    plan_table.add_column("Key sources", overflow="fold")
-    for plan in plans:
-        # Same user-controlled text as `plan list`: escape before rich sees it.
-        plan_table.add_row(plan.name, plan.auth_kind, escape("; ".join(plan.key_sources)))
-    if not plans:
-        console.print("[dim]No coding plans discovered on this machine.[/dim]")
-    else:
-        console.print(plan_table)
+    _print_discoverable_plans(plans, disabled)
 
 
 def _fmt_sub_short(plan_type: str | None, days_left: float | None) -> str:

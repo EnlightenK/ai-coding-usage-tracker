@@ -28,7 +28,7 @@ def collect_scan(
 ) -> tuple[list[ScanEntry], list[ScanEntry], list[DiscoveredPlan]]:
     """Return (config files, usage log stores, discovered plans) for one home."""
     home = home or paths.default_home()
-    return _file_entries(home), _log_entries(home), discover_plans(home)
+    return _file_entries(home), _log_entries(home), discover_plans(home, include_disabled=True)
 
 
 def _file_entries(home: Path) -> list[ScanEntry]:

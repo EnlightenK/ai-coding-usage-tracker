@@ -173,7 +173,7 @@ def test_schema_is_applied_once_per_database(
         "connect",
         lambda *args, **kwargs: real_connect(*args, factory=CountingConnection, **kwargs),
     )
-    store.record_usage(tmp_path, [_usage("2026-08-15", "glm-intl", input_tokens=10)])
+    store.record_usage(tmp_path, [_usage(_recent_day(), "glm-intl", input_tokens=10)])
     store.usage_history(tmp_path, days=30)
     store.cached_status(tmp_path, "glm-intl", max_age_seconds=300)
     assert len(scripts) == 1
@@ -181,10 +181,13 @@ def test_schema_is_applied_once_per_database(
 
 def test_schema_is_recreated_after_the_database_is_removed(tmp_path: Path) -> None:
     """A database deleted between calls is rebuilt, cache of applied paths aside."""
-    store.record_usage(tmp_path, [_usage("2026-08-15", "glm-intl", input_tokens=10)])
+    # Relative because the re-recorded row is read back through days=30 below:
+    # a hardcoded date ages out of that window and fails the last assertion.
+    day = _recent_day()
+    store.record_usage(tmp_path, [_usage(day, "glm-intl", input_tokens=10)])
     store.db_path(tmp_path).unlink()
     assert store.usage_history(tmp_path, days=30) == []
-    assert store.record_usage(tmp_path, [_usage("2026-08-15", "glm-intl", input_tokens=4)]) == 1
+    assert store.record_usage(tmp_path, [_usage(day, "glm-intl", input_tokens=4)]) == 1
     assert [r.input_tokens for r in store.usage_history(tmp_path, days=30)] == [4]
 
 

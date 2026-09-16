@@ -414,11 +414,13 @@ def _track_plan_from_scan(target_home: Path, plan: DiscoveredPlan) -> tuple[str,
 
     The key value itself never appears in a message — only the source it was
     copied from. Discovery resolves manually stored keys first and skips every
-    file source once a key is stored, so `key_sources == ["plantrack config"]`
-    holds exactly when the key already lives in plantrack config: --from-scan
-    can only ever fill a gap, never clobber a stored key.
+    file source once a key is stored, so `plantrack config` among the key
+    sources holds exactly when the key already lives in plantrack config
+    (membership, not equality: an OAuth plan can list a stored key alongside
+    its credential file): --from-scan can only ever fill a gap, never clobber
+    a stored key.
     """
-    if plan.key_sources == ["plantrack config"]:
+    if "plantrack config" in plan.key_sources:
         config.set_disabled(target_home, plan.plan_id, False)
         return "already tracked via the stored API key", None
     if plan.auth_kind == "oauth":

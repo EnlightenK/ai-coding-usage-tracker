@@ -365,6 +365,8 @@ def test_plan_add_from_scan_copies_glm_key_from_settings(
     result = runner.invoke(app, ["plan", "add", "glm-intl", "--from-scan"])
     assert result.exit_code == 0
     assert config.manual_keys(tmp_path)["glm-intl"]["api_key"] == "key-from-settings"
+    # GLM's quota endpoint is fixed, so no host is stored alongside the key.
+    assert "api_host" not in config.manual_keys(tmp_path)["glm-intl"]
     assert "glm-intl" in _status_plan_ids()
     assert "Key copied from" in result.output
     assert "key-from-settings" not in result.output
@@ -404,8 +406,10 @@ def test_plan_add_from_scan_oauth_plan_enables_without_key(
 ) -> None:
     """An OAuth plan has nothing to store: --from-scan just enables it and says
     tracking comes from its credential file."""
+    assert runner.invoke(app, ["plan", "disable", "claude-code"]).exit_code == 0
     result = runner.invoke(app, ["plan", "add", "claude-code", "--from-scan"])
     assert result.exit_code == 0
+    assert "claude-code" in _status_plan_ids()
     assert config.manual_keys(home) == {}
     assert "credentials" in result.output.lower()
 
@@ -473,8 +477,12 @@ def test_plan_add_from_scan_all_tracks_and_is_idempotent(
     result = runner.invoke(app, ["plan", "add", "--from-scan", "--all"])
     assert result.exit_code == 0
     assert _status_plan_ids() == expected
+    stored_after_first_run = config.manual_keys(home)
     again = runner.invoke(app, ["plan", "add", "--from-scan", "--all"])
     assert again.exit_code == 0
+    assert "already tracked via the stored API key" in again.output
+    assert _status_plan_ids() == expected
+    assert config.manual_keys(home) == stored_after_first_run
 
 
 def test_plan_add_from_scan_conflict_guards(
@@ -503,7 +511,9 @@ def test_plan_add_from_scan_all_on_empty_machine(
     assert "No plans discovered" in result.output
 
 
-def test_scan_shows_disabled_plan_state(fake_env: pytest.MonkeyPatch, home: Path) -> None:
+def test_scan_shows_disabled_plan_state(
+    fake_env: pytest.MonkeyPatch, home: Path, wide_console: None
+) -> None:
     """A removed-but-configured plan stays visible in scan, flagged disabled in
     both the table and the JSON payload."""
     assert runner.invoke(app, ["plan", "disable", "minimax-cn"]).exit_code == 0

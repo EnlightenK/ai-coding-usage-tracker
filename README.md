@@ -159,10 +159,10 @@ uv run plantrack plan list                        # every known plan and its sta
 uv run plantrack plan disable minimax-intl        # hide a plan you do not use
 uv run plantrack plan enable minimax-intl         # track it again
 uv run plantrack plan remove minimax-intl         # drop any stored key AND disable
-uv run plantrack plan add glm-intl --api-key KEY  # track a plan auto-discovery cannot find
-uv run plantrack plan add glm-intl --from-scan   # copy the API key the scan found on disk
-uv run plantrack plan add --from-scan            # list what a scan found, with tracking state
-uv run plantrack plan add --from-scan --all      # adopt every plan the scan found
+uv run plantrack plan add glm-intl --api-key KEY   # track a plan auto-discovery cannot find
+uv run plantrack plan add glm-intl --from-scan     # copy the API key the scan found on disk
+uv run plantrack plan add --from-scan              # list what a scan found, with tracking state
+uv run plantrack plan add --from-scan --all        # adopt every plan the scan found
 ```
 
 Disabled plans disappear from both `status` and `usage`. `plan remove` also
@@ -176,8 +176,10 @@ else, so a pasted "mirror" URL cannot receive your key.
 
 `plan add PLAN_ID --from-scan` resolves the API key from what discovery found
 in the tool's config files and stores it in plantrack's config with the same
-`0600` protection, then enables the plan. A copied key is a snapshot: if the
-tool config later rotates the key, re-run the command to refresh it. OAuth
+`0600` protection, then enables the plan. A copied key is a snapshot, and a
+re-run never overwrites one — it reports the plan as already tracked. If the
+tool config later rotates the key, refresh with `plan remove PLAN_ID` followed
+by `plan add PLAN_ID --from-scan`, or store the new key with `--api-key`. OAuth
 plans (`claude-code`, `chatgpt-codex`) have no key to store, so `--from-scan`
 on them only enables the plan and confirms tracking comes from their
 credential file. A plan whose credentials discovery cannot see exits with an

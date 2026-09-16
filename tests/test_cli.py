@@ -423,9 +423,7 @@ def test_plan_add_from_scan_oauth_plan_without_credentials(
     assert runner.invoke(app, ["plan", "add", "claude-code", "--from-scan"]).exit_code == 2
 
 
-def test_plan_add_from_scan_recovers_removed_plan(
-    fake_env: pytest.MonkeyPatch, home: Path
-) -> None:
+def test_plan_add_from_scan_recovers_removed_plan(fake_env: pytest.MonkeyPatch, home: Path) -> None:
     """`plan remove` is not a dead end: --from-scan still sees disabled plans
     and re-adds them from their on-disk credentials."""
     assert runner.invoke(app, ["plan", "remove", "minimax-intl"]).exit_code == 0
@@ -447,9 +445,7 @@ def test_plan_add_from_scan_reports_already_stored_key(
     assert config.manual_keys(tmp_path)["minimax-cn"]["api_key"] == "k"
 
 
-def test_plan_add_from_scan_unknown_plan(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_plan_add_from_scan_unknown_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A plan id plantrack has never heard of is rejected before discovery is
     even consulted."""
     monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))

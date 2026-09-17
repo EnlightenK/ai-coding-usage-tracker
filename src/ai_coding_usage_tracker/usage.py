@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import paths
-from .config import disabled_plans
+from .config import disabled_plans, forgotten_plans
 from .models import UsageRecord
 from .providers import claude, codex, opencode
 
@@ -54,6 +54,9 @@ def collect_usage(home: Path | None = None, days: int = 14) -> list[UsageRecord]
     home = home or paths.default_home()
     # Records are dated in UTC, so the window must start from a UTC today.
     since = datetime.now(tz=timezone.utc).date() - timedelta(days=days - 1)
-    disabled = disabled_plans(home)
-    records = [r for r in iter_all_usage(home, since) if r.plan_id not in disabled]
+    # Forgotten plans (true removal) are hidden here too: `plan remove`
+    # discards the disabled flag, so filtering disabled alone would make a
+    # removed plan's usage reappear.
+    hidden = disabled_plans(home) | forgotten_plans(home)
+    records = [r for r in iter_all_usage(home, since) if r.plan_id not in hidden]
     return aggregate(records)

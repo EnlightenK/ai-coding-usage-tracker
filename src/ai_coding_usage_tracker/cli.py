@@ -353,6 +353,7 @@ def plan_list(
     target_home = home or paths.default_home()
     discovered = {p.plan_id: p for p in discover_plans(target_home)}
     disabled = config.disabled_plans(target_home)
+    forgotten = config.forgotten_plans(target_home)
     stored_keys = config.manual_keys(target_home)
     table = Table(title="Coding plans known to plantrack")
     table.add_column("Plan", style="bold")
@@ -372,7 +373,9 @@ def plan_list(
         # Deduplicate while keeping discovery's order: an enabled plan with a
         # stored key otherwise lists "plantrack config" twice.
         sources = list(dict.fromkeys(sources))
-        if plan_id in disabled:
+        if plan_id in forgotten:
+            state = "[dim]forgotten[/dim]"
+        elif plan_id in disabled:
             state = "[red]disabled[/red]"
         elif plan or plan_id in stored_keys:
             state = "[green]tracked[/green]"
@@ -526,6 +529,10 @@ def plan_add(
         return
     _require_plan_id(plan_id)
     if from_scan:
+        # Naming an id explicitly is intent to track it: lift the forget
+        # marker before discovery runs, or a removed-but-configured plan
+        # could not be re-added even by name.
+        config.set_forgotten(target_home, plan_id, False)
         _add_plan_from_scan(target_home, plan_id)
         return
     if api_host is not None:
@@ -557,6 +564,10 @@ def plan_add(
     if not config.set_manual_key(target_home, plan_id, api_key.strip(), api_host):
         err_console.print(f"[red]Could not write {config_path}.[/red]")
         raise typer.Exit(code=1)
+    # The add is committed: only now lift the forget marker, so a failed
+    # manual add (bad --api-host, empty key, unwritable config) cannot
+    # silently un-remove a plan.
+    config.set_forgotten(target_home, plan_id, False)
     config.set_disabled(target_home, plan_id, False)
     console.print(f"[green]{PLAN_LABELS[plan_id]} is now tracked via the stored API key.[/green]")
     console.print(f"Key saved to {config_path}; protect this file like a password.")
@@ -567,16 +578,21 @@ def plan_remove(
     plan_id: str = typer.Argument(..., help="Plan id to stop tracking."),
     home: Path | None = typer.Option(None, help="Home directory for the config file."),
 ) -> None:
-    """Stop tracking a plan: drops any stored key and disables it."""
+    """Stop tracking a plan: drops any stored key and forgets it
+    (hidden from scan until re-enabled).
+    """
     _require_plan_id(plan_id)
     target_home = home or paths.default_home()
     had_key = plan_id in config.manual_keys(target_home)
     config.clear_manual_key(target_home, plan_id)
-    config.set_disabled(target_home, plan_id, True)
+    # Forgotten supersedes disabled: a removed plan must not linger as
+    # "disabled", and `plan enable` clears both markers anyway.
+    config.set_disabled(target_home, plan_id, False)
+    config.set_forgotten(target_home, plan_id, True)
     if had_key:
         console.print("Removed the API key stored by `plantrack plan add`.")
     console.print(
-        f"[green]{PLAN_LABELS[plan_id]} removed from tracking.[/green] "
+        f"[green]{PLAN_LABELS[plan_id]} removed from tracking and hidden from scan.[/green] "
         f"Restore it later with: plantrack plan enable {plan_id}"
     )
 
@@ -600,9 +616,11 @@ def plan_enable(
     plan_id: str = typer.Argument(..., help="Plan id to track again."),
     home: Path | None = typer.Option(None, help="Home directory for the config file."),
 ) -> None:
-    """Track a disabled plan again."""
+    """Track a disabled or forgotten plan again."""
     _require_plan_id(plan_id)
-    config.set_disabled(home or paths.default_home(), plan_id, False)
+    target_home = home or paths.default_home()
+    config.set_disabled(target_home, plan_id, False)
+    config.set_forgotten(target_home, plan_id, False)
     console.print(f"[green]{PLAN_LABELS[plan_id]} enabled.[/green]")
 
 

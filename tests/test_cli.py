@@ -384,6 +384,74 @@ def test_remove_prints_key_removal_line(tmp_path: Path, monkeypatch: pytest.Monk
     result = runner.invoke(app, ["plan", "remove", "minimax-cn"])
     assert result.exit_code == 0
     assert "Removed the API key stored by `plantrack plan add`." in result.output
+    # The message is gated on had_key computed before the clear, so pin the
+    # actual state too: the stored key must really be gone from config.
+    assert "minimax-cn" not in config.manual_keys(tmp_path)
+
+
+def test_failed_manual_add_keeps_forgotten_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manual add that fails validation must not silently un-remove the
+    plan: the forget marker lifts only once the add is committed."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    assert runner.invoke(app, ["plan", "remove", "minimax-cn"]).exit_code == 0
+    result = runner.invoke(
+        app,
+        ["plan", "add", "minimax-cn", "--api-key", "k", "--api-host", "http://evil.example"],
+    )
+    assert result.exit_code == 2
+    assert "minimax-cn" in config.forgotten_plans(tmp_path)
+    assert config.manual_keys(tmp_path) == {}
+
+
+def test_usage_hides_forgotten_plan(fake_env: pytest.MonkeyPatch, home: Path) -> None:
+    """`plan remove` must hide the plan from `usage` too: remove discards the
+    disabled flag, so a disabled-only filter would let the removed plan's
+    rows reappear here."""
+    assert runner.invoke(app, ["plan", "remove", "glm-intl"]).exit_code == 0
+    payload = json.loads(runner.invoke(app, ["usage", "--days", "3650", "--json"]).output)
+    assert "glm-intl" not in {r["plan_id"] for r in payload}
+
+
+def test_plan_add_from_scan_listing_hides_forgotten_plan(
+    fake_env: pytest.MonkeyPatch, home: Path, wide_console: None
+) -> None:
+    """The read-only listing shares discovery's exclusion: forgotten plans are
+    not offered for re-add unless explicitly named."""
+    assert runner.invoke(app, ["plan", "remove", "glm-intl"]).exit_code == 0
+    result = runner.invoke(app, ["plan", "add", "--from-scan"])
+    assert result.exit_code == 0
+    assert "GLM Coding Plan" not in result.output
+
+
+def test_remove_is_idempotent(fake_env: pytest.MonkeyPatch, home: Path) -> None:
+    """Removing an already-forgotten plan is a quiet no-op, not an error."""
+    assert runner.invoke(app, ["plan", "remove", "minimax-intl"]).exit_code == 0
+    again = runner.invoke(app, ["plan", "remove", "minimax-intl"])
+    assert again.exit_code == 0
+    assert "minimax-intl" in config.forgotten_plans(home)
+
+
+def test_enable_on_never_removed_plan_is_a_no_op(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enabling a plan that was never removed just clears nothing and succeeds."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    result = runner.invoke(app, ["plan", "enable", "glm-intl"])
+    assert result.exit_code == 0
+    assert config.forgotten_plans(tmp_path) == set()
+
+
+def test_enable_after_tool_config_deleted(home: Path) -> None:
+    """Enable clears the marker even when the plan's credentials are gone:
+    nothing reappears anywhere, but nothing errors either."""
+    assert runner.invoke(app, ["plan", "remove", "minimax-intl"]).exit_code == 0
+    (home / ".codex" / "config.toml").unlink()
+    result = runner.invoke(app, ["plan", "enable", "minimax-intl"])
+    assert result.exit_code == 0
+    assert "minimax-intl" not in _status_plan_ids()
+    assert "minimax-intl" not in config.forgotten_plans(home)
 
 
 def test_plan_add_tracks_plan_on_unconfigured_home(
@@ -526,8 +594,9 @@ def test_plan_add_from_scan_oauth_plan_without_credentials(
 
 
 def test_plan_add_from_scan_recovers_removed_plan(fake_env: pytest.MonkeyPatch, home: Path) -> None:
-    """`plan remove` is not a dead end: --from-scan still sees disabled plans
-    and re-adds them from their on-disk credentials."""
+    """`plan remove` is not a dead end: naming the plan in `plan add` lifts
+    the forget marker before discovery runs, so --from-scan can re-add it
+    from its on-disk credentials."""
     assert runner.invoke(app, ["plan", "remove", "minimax-intl"]).exit_code == 0
     result = runner.invoke(app, ["plan", "add", "minimax-intl", "--from-scan"])
     assert result.exit_code == 0

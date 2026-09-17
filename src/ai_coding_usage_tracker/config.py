@@ -33,7 +33,7 @@ def save_config(home: Path | None, config: dict) -> bool:
 
 
 def disabled_plans(home: Path | None = None) -> set[str]:
-    """Plan ids the user has removed from tracking."""
+    """Plan ids the user has temporarily hidden from status and usage."""
     value = load_config(home).get("disabled")
     if not isinstance(value, list):
         return set()

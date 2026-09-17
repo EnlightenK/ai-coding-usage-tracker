@@ -168,7 +168,7 @@ uv run plantrack plan add --from-scan --all        # adopt every plan the scan f
 `plan disable` hides a plan from `status` and `usage` temporarily: it still
 appears in `scan` as disabled, and `plan enable` brings it back. `plan remove`
 truly removes a plan — it drops any key stored by `plan add` and forgets the
-plan, hiding it from `scan`, `--from-scan` and `status` entirely; only
+plan, hiding it from `scan`, `--from-scan`, `status` and `usage` entirely; only
 `plan list` still shows forgotten plans. `plan enable <id>` (or re-running
 `plan add <id>`) restores a forgotten plan. Manually
 added keys live in `~/.config/plantrack/config.json` — it is created with
@@ -228,7 +228,7 @@ All of plantrack's own records live in one data home, `~/.local/ptk/`
 | `~/.local/ptk/session-key` | claude.ai `sessionKeyV3` cookie (see `refresh-claude`) |
 | `~/.local/ptk/payloads/` | Raw provider dumps when `PLANTRACK_DEBUG_PAYLOAD=1` |
 
-Configuration (disabled plans, manual keys) stays at
+Configuration (disabled/forgotten plans, manual keys) stays at
 `~/.config/plantrack/config.json`. Nothing points into a repository checkout
 unless you explicitly configure it. Data from the pre-0.2.0 layout
 (`~/.local/state/plantrack/`, `~/.claude/plantrack-*.json`) is moved into
@@ -450,7 +450,7 @@ scripts/
 └── statusline-wrapper.sh   # Claude statusline tee into `ptk capture-claude`
 src/ai_coding_usage_tracker/
 ├── cli.py              # Typer commands (status, usage, plan, scan, ...)
-├── config.py           # user config: disabled plans and manual API keys
+├── config.py           # user config: disabled/forgotten plans and manual API keys
 ├── discovery.py        # credential auto-discovery from local tool configs
 ├── models.py           # dataclasses shared across providers
 ├── parsing.py          # shared JSON/timestamp/token parsing helpers

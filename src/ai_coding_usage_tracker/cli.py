@@ -528,11 +528,11 @@ def plan_add(
             )
         return
     _require_plan_id(plan_id)
-    # Naming an id explicitly is intent to track it: lift the forget marker
-    # before discovery runs, or a removed-but-configured plan could not be
-    # re-added even by name.
-    config.set_forgotten(target_home, plan_id, False)
     if from_scan:
+        # Naming an id explicitly is intent to track it: lift the forget
+        # marker before discovery runs, or a removed-but-configured plan
+        # could not be re-added even by name.
+        config.set_forgotten(target_home, plan_id, False)
         _add_plan_from_scan(target_home, plan_id)
         return
     if api_host is not None:
@@ -564,6 +564,10 @@ def plan_add(
     if not config.set_manual_key(target_home, plan_id, api_key.strip(), api_host):
         err_console.print(f"[red]Could not write {config_path}.[/red]")
         raise typer.Exit(code=1)
+    # The add is committed: only now lift the forget marker, so a failed
+    # manual add (bad --api-host, empty key, unwritable config) cannot
+    # silently un-remove a plan.
+    config.set_forgotten(target_home, plan_id, False)
     config.set_disabled(target_home, plan_id, False)
     console.print(f"[green]{PLAN_LABELS[plan_id]} is now tracked via the stored API key.[/green]")
     console.print(f"Key saved to {config_path}; protect this file like a password.")

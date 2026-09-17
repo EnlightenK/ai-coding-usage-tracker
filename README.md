@@ -158,15 +158,19 @@ still lands on the right subscription.
 uv run plantrack plan list                        # every known plan and its state
 uv run plantrack plan disable minimax-intl        # hide a plan you do not use
 uv run plantrack plan enable minimax-intl         # track it again
-uv run plantrack plan remove minimax-intl         # drop any stored key AND disable
+uv run plantrack plan remove minimax-intl         # true removal: drop any stored key AND forget (hidden from scan)
 uv run plantrack plan add glm-intl --api-key KEY   # track a plan auto-discovery cannot find
 uv run plantrack plan add glm-intl --from-scan     # copy the API key the scan found on disk
 uv run plantrack plan add --from-scan              # list what a scan found, with tracking state
 uv run plantrack plan add --from-scan --all        # adopt every plan the scan found
 ```
 
-Disabled plans disappear from both `status` and `usage`. `plan remove` also
-deletes a key stored by `plan add` (use `plan disable` to keep it). Manually
+`plan disable` hides a plan from `status` and `usage` temporarily: it still
+appears in `scan` as disabled, and `plan enable` brings it back. `plan remove`
+truly removes a plan — it drops any key stored by `plan add` and forgets the
+plan, hiding it from `scan`, `--from-scan` and `status` entirely; only
+`plan list` still shows forgotten plans. `plan enable <id>` (or re-running
+`plan add <id>`) restores a forgotten plan. Manually
 added keys live in `~/.config/plantrack/config.json` — it is created with
 owner-only permissions (`0600`, directory `0700`); protect backups the same
 way. When `--api-key` is omitted, the command prompts for the key with hidden
@@ -196,9 +200,9 @@ Reports which tool configuration and credential files exist (with size and last
 modification), how many local usage log files each tool has written, and which
 plans discovery found — useful when setting up a new machine or diagnosing a
 plan that does not show up. The discovered-plans table carries a State column
-(`tracked` / `disabled`): plans removed with `plan remove` still appear as long
-as their config files exist, and `scan --json` plan entries carry a `disabled`
-field.
+(`tracked` / `disabled`): plans forgotten with `plan remove` no longer appear
+in scan — only disabled ones do (the State column itself is unchanged) — and
+`scan --json` plan entries carry a `disabled` field.
 
 ### `history` — recorded usage and status over time
 

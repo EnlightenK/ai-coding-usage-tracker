@@ -53,6 +53,27 @@ def set_disabled(home: Path | None, plan_id: str, disabled: bool) -> bool:
     return save_config(home, config)
 
 
+def forgotten_plans(home: Path | None = None) -> set[str]:
+    """Plan ids the user has removed from tracking for good."""
+    value = load_config(home).get("forgotten")
+    if not isinstance(value, list):
+        return set()
+    return {item for item in value if isinstance(item, str)}
+
+
+def set_forgotten(home: Path | None, plan_id: str, forgotten: bool) -> bool:
+    """Add or remove one plan id from the forgotten list."""
+    config = load_config(home)
+    value = config.get("forgotten")
+    ids = {item for item in value if isinstance(item, str)} if isinstance(value, list) else set()
+    if forgotten:
+        ids.add(plan_id)
+    else:
+        ids.discard(plan_id)
+    config["forgotten"] = sorted(ids)
+    return save_config(home, config)
+
+
 def manual_keys(home: Path | None = None) -> dict[str, dict]:
     """Plan ids to API-key entries supplied via `plantrack plan add`."""
     value = load_config(home).get("api_keys")

@@ -278,10 +278,112 @@ def test_plan_enable_restores_plan(fake_env: pytest.MonkeyPatch, home: Path) -> 
     assert "minimax-intl" in _status_plan_ids()
 
 
-def test_plan_remove_disables_discovered_plan(fake_env: pytest.MonkeyPatch, home: Path) -> None:
+def test_plan_remove_hides_plan_from_status(fake_env: pytest.MonkeyPatch, home: Path) -> None:
     result = runner.invoke(app, ["plan", "remove", "minimax-intl"])
     assert result.exit_code == 0
     assert "minimax-intl" not in _status_plan_ids()
+
+
+def test_plan_remove_forgets_plan_and_hides_it_from_scan(
+    fake_env: pytest.MonkeyPatch, home: Path, wide_console: None
+) -> None:
+    """`plan remove` is true removal now: the plan leaves scan entirely and the
+    config records it as forgotten, not merely disabled."""
+    assert runner.invoke(app, ["plan", "remove", "minimax-intl"]).exit_code == 0
+    scan_result = runner.invoke(app, ["scan"])
+    assert scan_result.exit_code == 0
+    assert "MiniMax Coding Plan (Intl)" not in scan_result.output
+    payload = json.loads(runner.invoke(app, ["scan", "--json"]).output)
+    assert "minimax-intl" not in {p["plan_id"] for p in payload["plans"]}
+    assert "minimax-intl" not in config.manual_keys(home)
+    assert "minimax-intl" in config.forgotten_plans(home)
+    assert "minimax-intl" not in config.disabled_plans(home)
+
+
+def test_plan_list_shows_forgotten_state(
+    fake_env: pytest.MonkeyPatch, home: Path, wide_console: None
+) -> None:
+    """`plan list` is the one place a removed plan stays visible, flagged
+    forgotten so the state reads as deliberate rather than temporary."""
+    assert runner.invoke(app, ["plan", "remove", "minimax-intl"]).exit_code == 0
+    result = runner.invoke(app, ["plan", "list"])
+    assert result.exit_code == 0
+    assert "forgotten" in result.output
+
+
+def test_plan_enable_restores_forgotten_plan(
+    fake_env: pytest.MonkeyPatch, home: Path, wide_console: None
+) -> None:
+    """`plan enable` is the universal restore: it clears the forgotten marker
+    and the plan shows up in status and scan again."""
+    assert runner.invoke(app, ["plan", "remove", "minimax-intl"]).exit_code == 0
+    result = runner.invoke(app, ["plan", "enable", "minimax-intl"])
+    assert result.exit_code == 0
+    assert "minimax-intl" in _status_plan_ids()
+    assert config.forgotten_plans(home) == set()
+    assert "MiniMax Coding Plan (Intl)" in runner.invoke(app, ["scan"]).output
+
+
+def test_plan_add_from_scan_unforgets_removed_plan(
+    fake_env: pytest.MonkeyPatch, home: Path
+) -> None:
+    """Naming an id to `plan add --from-scan` is intent to track it, so the add
+    clears the forgotten marker instead of failing discovery."""
+    assert runner.invoke(app, ["plan", "remove", "glm-intl"]).exit_code == 0
+    result = runner.invoke(app, ["plan", "add", "glm-intl", "--from-scan"])
+    assert result.exit_code == 0
+    assert config.forgotten_plans(home) == set()
+    assert "glm-intl" in _status_plan_ids()
+
+
+def test_plan_add_manual_unforgets_forgotten_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manual `plan add` on a forgotten plan also un-forgets: removal only
+    sticks until the user explicitly asks for the plan back."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    assert runner.invoke(app, ["plan", "remove", "minimax-cn"]).exit_code == 0
+    assert "minimax-cn" in config.forgotten_plans(tmp_path)
+    result = runner.invoke(app, ["plan", "add", "minimax-cn", "--api-key", "k"])
+    assert result.exit_code == 0
+    assert config.forgotten_plans(tmp_path) == set()
+    assert config.manual_keys(tmp_path)["minimax-cn"]["api_key"] == "k"
+
+
+def test_plan_add_from_scan_all_skips_forgotten_plans(
+    fake_env: pytest.MonkeyPatch, home: Path, wide_console: None
+) -> None:
+    """`--all` adopts only what discovery still finds: a forgotten plan is not
+    re-offered, while every other discoverable plan is tracked."""
+    assert runner.invoke(app, ["plan", "remove", "minimax-intl"]).exit_code == 0
+    result = runner.invoke(app, ["plan", "add", "--from-scan", "--all"])
+    assert result.exit_code == 0
+    assert "MiniMax Coding Plan (Intl)" not in result.output
+    assert "minimax-intl" not in _status_plan_ids()
+    assert _status_plan_ids() == {"minimax-cn", "glm-intl", "claude-code", "chatgpt-codex"}
+
+
+def test_remove_then_disable_still_shows_forgotten(
+    fake_env: pytest.MonkeyPatch, home: Path, wide_console: None
+) -> None:
+    """Forgotten outranks disabled in `plan list`: removing and then disabling
+    keeps the plan labelled forgotten, not disabled."""
+    assert runner.invoke(app, ["plan", "remove", "minimax-intl"]).exit_code == 0
+    assert runner.invoke(app, ["plan", "disable", "minimax-intl"]).exit_code == 0
+    result = runner.invoke(app, ["plan", "list"])
+    assert result.exit_code == 0
+    assert "forgotten" in result.output
+    assert "disabled" not in result.output
+
+
+def test_remove_prints_key_removal_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Removing a plan whose key was pasted still says the stored key went
+    away, so users know to re-paste it if they track the plan again."""
+    monkeypatch.setenv("PLANTRACK_HOME", str(tmp_path))
+    assert runner.invoke(app, ["plan", "add", "minimax-cn", "--api-key", "k"]).exit_code == 0
+    result = runner.invoke(app, ["plan", "remove", "minimax-cn"])
+    assert result.exit_code == 0
+    assert "Removed the API key stored by `plantrack plan add`." in result.output
 
 
 def test_plan_add_tracks_plan_on_unconfigured_home(

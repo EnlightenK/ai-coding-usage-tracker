@@ -129,6 +129,32 @@ def test_include_disabled_still_requires_key_sources(tmp_path: Path) -> None:
     assert discover_plans(tmp_path, include_disabled=True) == []
 
 
+def test_forgotten_plan_excluded_by_default(home: Path) -> None:
+    config.set_forgotten(home, "minimax-cn", True)
+    ids = {p.plan_id for p in discover_plans(home)}
+    assert "minimax-cn" not in ids
+
+
+def test_forgotten_plan_excluded_even_with_include_disabled(home: Path) -> None:
+    """Forgotten means "never show", so it survives the include_disabled widening.
+
+    The flag exists to re-surface *disabled* plans for `plan add --from-scan`;
+    a forgotten plan was deliberately removed and must stay hidden even then —
+    forgotten is a stronger exclusion than disabled.
+    """
+    config.set_forgotten(home, "minimax-cn", True)
+    ids = {p.plan_id for p in discover_plans(home, include_disabled=True)}
+    assert "minimax-cn" not in ids
+
+
+def test_forgotten_plan_returns_after_marker_cleared(home: Path) -> None:
+    config.set_forgotten(home, "minimax-cn", True)
+    assert "minimax-cn" not in {p.plan_id for p in discover_plans(home)}
+    config.set_forgotten(home, "minimax-cn", False)
+    plans = {p.plan_id: p for p in discover_plans(home)}
+    assert plans["minimax-cn"].api_key == "mm-cn-key"
+
+
 FALLBACK = "https://fallback.example"
 
 

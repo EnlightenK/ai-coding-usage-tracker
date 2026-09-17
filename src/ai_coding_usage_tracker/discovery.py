@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import paths
-from .config import disabled_plans, manual_keys
+from .config import disabled_plans, forgotten_plans, manual_keys
 from .parsing import read_json_dict
 
 
@@ -182,7 +182,10 @@ def discover_plans(
     """Scan local tool configs and return every coding plan that can be tracked.
 
     Disabled plans are only returned when `include_disabled` is set; plans
-    without any key source are never returned either way.
+    without any key source are never returned either way. Forgotten plans
+    (true removal via `plan remove`) are excluded even when
+    `include_disabled` is set — forgotten is a stronger exclusion than
+    disabled.
     """
     home = home or paths.default_home()
     discovered: dict[str, DiscoveredPlan] = {}
@@ -258,8 +261,11 @@ def discover_plans(
         codex_plan.key_sources.append("~/.codex/auth.json")
 
     disabled = disabled_plans(home)
+    forgotten = forgotten_plans(home)
     return [
         discovered[plan_id]
         for plan_id in PLAN_ORDER
-        if discovered[plan_id].key_sources and (include_disabled or plan_id not in disabled)
+        if discovered[plan_id].key_sources
+        and plan_id not in forgotten
+        and (include_disabled or plan_id not in disabled)
     ]

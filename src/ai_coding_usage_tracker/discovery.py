@@ -49,6 +49,12 @@ OPENCODE_PROVIDER_TO_PLAN: dict[str, str] = {
     "zai-coding-plan": "glm-intl",
     "minimax-cn-coding-plan": "minimax-cn",
     "minimax-coding-plan": "minimax-intl",
+    # Plain ids from the models.dev catalog opencode also authenticates
+    # against, listed after the -coding-plan plugins so the specific
+    # variant wins when a plan has credentials under both.
+    "zai": "glm-intl",
+    "minimax-cn": "minimax-cn",
+    "minimax": "minimax-intl",
 }
 
 MINIMAX_DEFAULT_HOSTS: dict[str, str] = {
@@ -78,6 +84,24 @@ def _is_trusted_minimax_url(value: str) -> bool:
     )
 
 
+def _https_origin(value: str) -> str | None:
+    """Return scheme://host[:port] for an https URL, else None.
+
+    Paths and query strings are dropped on purpose: the value may be a
+    Claude-style base URL like `https://api.minimaxi.com/anthropic`, while
+    the quota API lives at the origin root.
+    """
+    try:
+        parts = urlsplit(value)
+        hostname = (parts.hostname or "").lower()
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme != "https" or not hostname:
+        return None
+    return f"https://{hostname}:{port}" if port else f"https://{hostname}"
+
+
 def sanitize_minimax_host(value: str, default: str) -> str:
     """Constrain a host from user/env configuration to MiniMax-owned URLs.
 
@@ -85,11 +109,18 @@ def sanitize_minimax_host(value: str, default: str) -> str:
     (~/.codex/config.toml, ~/.claude/settings*.json, plantrack config), so
     anything that is not a known alias or an https URL on a MiniMax domain
     is replaced with `default` before an API key is ever sent to it.
+    Normalization works on the origin: a declared path (Claude Code needs
+    `/anthropic` in its base URL) is dropped and `api.` hosts are mapped to
+    their canonical `www.` alias, so the quota URL is never built from a
+    path-bearing host that would 404.
     """
-    if value in MINIMAX_HOST_ALIASES:
-        return MINIMAX_HOST_ALIASES[value]
-    if _is_trusted_minimax_url(value):
-        return value
+    origin = _https_origin(value)
+    if origin is None:
+        return default
+    if origin in MINIMAX_HOST_ALIASES:
+        return MINIMAX_HOST_ALIASES[origin]
+    if _is_trusted_minimax_url(origin):
+        return origin
     return default
 
 

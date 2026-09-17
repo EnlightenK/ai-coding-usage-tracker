@@ -60,6 +60,45 @@ def test_oauth_plans_report_sources(home: Path) -> None:
     assert plans["chatgpt-codex"].key_sources
 
 
+def _write_opencode_auth(home: Path, payload: dict) -> None:
+    auth = home / ".local" / "share" / "opencode" / "auth.json"
+    auth.parent.mkdir(parents=True, exist_ok=True)
+    auth.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_opencode_plain_provider_ids_are_discovered(tmp_path: Path) -> None:
+    """opencode also authenticates the plain models.dev ids (`minimax-cn`,
+    `minimax`, `zai`), not just the `-coding-plan` plugins."""
+    _write_opencode_auth(
+        tmp_path,
+        {
+            "minimax-cn": {"type": "api", "key": "mm-cn-key"},
+            "minimax": {"type": "api", "key": "mm-intl-key"},
+            "zai": {"type": "api", "key": "zai-key"},
+        },
+    )
+    plans = {p.plan_id: p for p in discover_plans(tmp_path)}
+    assert plans["minimax-cn"].api_key == "mm-cn-key"
+    assert plans["minimax-cn"].api_host == "https://www.minimaxi.com"
+    assert plans["minimax-intl"].api_key == "mm-intl-key"
+    assert plans["minimax-intl"].api_host == "https://www.minimax.io"
+    assert plans["glm-intl"].api_key == "zai-key"
+
+
+def test_opencode_coding_plan_id_wins_over_plain_id(tmp_path: Path) -> None:
+    """When both the plugin id and the plain catalog id hold credentials, the
+    -coding-plan entry (the plan-specific one) wins."""
+    _write_opencode_auth(
+        tmp_path,
+        {
+            "minimax-cn": {"type": "api", "key": "from-catalog"},
+            "minimax-cn-coding-plan": {"type": "api", "key": "from-plugin"},
+        },
+    )
+    plans = {p.plan_id: p for p in discover_plans(tmp_path)}
+    assert plans["minimax-cn"].api_key == "from-plugin"
+
+
 def test_empty_home_discovers_nothing(tmp_path: Path) -> None:
     assert discover_plans(tmp_path) == []
 
@@ -75,6 +114,16 @@ def test_glm_key_from_claude_settings_file(tmp_path: Path) -> None:
 
 def test_minimax_cn_key_from_claude_settings_file(tmp_path: Path) -> None:
     _write_claude_settings(tmp_path, "settings-mx-cn.json", "https://api.minimaxi.com")
+    plans = {p.plan_id: p for p in discover_plans(tmp_path)}
+    assert plans["minimax-cn"].api_key == "key-from-settings"
+    assert plans["minimax-cn"].api_host == "https://www.minimaxi.com"
+
+
+def test_minimax_cn_settings_base_url_with_path_is_normalized(tmp_path: Path) -> None:
+    """Claude Code needs `/anthropic` in its base URL; the quota host is the
+    bare origin, so the path must not survive into `api_host` (a stored
+    `https://api.minimaxi.com/anthropic` used to 404 every quota poll)."""
+    _write_claude_settings(tmp_path, "settings-mx-cn.json", "https://api.minimaxi.com/anthropic")
     plans = {p.plan_id: p for p in discover_plans(tmp_path)}
     assert plans["minimax-cn"].api_key == "key-from-settings"
     assert plans["minimax-cn"].api_host == "https://www.minimaxi.com"
@@ -135,6 +184,22 @@ FALLBACK = "https://fallback.example"
 def test_sanitize_maps_alias_to_canonical_host() -> None:
     assert sanitize_minimax_host("https://api.minimaxi.com", FALLBACK) == "https://www.minimaxi.com"
     assert sanitize_minimax_host("https://api.minimax.io", FALLBACK) == "https://www.minimax.io"
+
+
+def test_sanitize_strips_path_and_maps_alias_by_origin() -> None:
+    """The alias matches on scheme+host, not the whole string: a Claude-style
+    base URL with a path must normalize to the bare canonical quota host."""
+    assert (
+        sanitize_minimax_host("https://api.minimaxi.com/anthropic", FALLBACK)
+        == "https://www.minimaxi.com"
+    )
+    assert (
+        sanitize_minimax_host("https://www.minimax.io/anthropic", FALLBACK)
+        == "https://www.minimax.io"
+    )
+    assert sanitize_minimax_host("https://api.minimaxi.com/other/path", FALLBACK) == (
+        "https://www.minimaxi.com"
+    )
 
 
 def test_sanitize_accepts_https_minimax_domain() -> None:
